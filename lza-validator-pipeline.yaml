@@ -101,7 +101,7 @@ Resources:
           - LOCAL_SOURCE_CACHE
       Environment:
         Type: LINUX_CONTAINER
-        ComputeType: BUILD_GENERAL1_LARGE # 8 vCPUs, 15 GB RAM
+        ComputeType: BUILD_GENERAL1_LARGE  # 8 vCPUs, 15 GB RAM
         Image: aws/codebuild/standard:7.0
         EnvironmentVariables:
           - Name: LZA_VERSION
