@@ -6,6 +6,7 @@ LZA_VERSION="${LZA_VERSION:-v1.16.0}"
 AWS_PARTITION="${AWS_PARTITION:-aws}"
 AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
 AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+LZA_SOURCE_BUCKET="${LZA_SOURCE_BUCKET:-}"
 WORK_DIR="/tmp/lza-validation"
 START_TIME=$(date +%s)
 
@@ -29,12 +30,18 @@ echo "LAYER 2: LZA Schema & Cross-Reference Validation"
 echo "=========================================================="
 mkdir -p "${WORK_DIR}"
 
-if [ -d "${WORK_DIR}/lza-source/.git" ] && [ "$(cd "${WORK_DIR}/lza-source" && git describe --tags --always)" = "${LZA_VERSION}" ]; then
-  echo "Using cached LZA source code (${LZA_VERSION})..."
+if [ -d "${WORK_DIR}/lza-source/source/package.json" ] || [ -d "${WORK_DIR}/lza-source/source" ]; then
+  echo "Using cached LZA source (${LZA_VERSION})..."
 else
-  echo "Cloning AWS LZA repository (${LZA_VERSION})..."
   rm -rf "${WORK_DIR}/lza-source"
-  git clone --depth 1 --branch "${LZA_VERSION}" https://github.com/awslabs/landing-zone-accelerator-on-aws.git "${WORK_DIR}/lza-source"
+  if [ -n "${LZA_SOURCE_BUCKET}" ]; then
+    echo "Downloading LZA source bundle from s3://${LZA_SOURCE_BUCKET}/lza-${LZA_VERSION}.tar.gz..."
+    mkdir -p "${WORK_DIR}/lza-source"
+    aws s3 cp "s3://${LZA_SOURCE_BUCKET}/lza-${LZA_VERSION}.tar.gz" - | tar -xz -C "${WORK_DIR}/lza-source"
+  else
+    echo "LZA_SOURCE_BUCKET not set, falling back to git clone (${LZA_VERSION})..."
+    git clone --depth 1 --branch "${LZA_VERSION}" https://github.com/awslabs/landing-zone-accelerator-on-aws.git "${WORK_DIR}/lza-source"
+  fi
 fi
 
 cd "${WORK_DIR}/lza-source/source"

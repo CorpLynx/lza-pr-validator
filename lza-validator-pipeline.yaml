@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Hardened S3 + CodeBuild validation engine with caching and large compute for LZA PR checks'
+Description: 'S3 + CodeBuild validation engine with caching for LZA PR checks'
 
 Parameters:
   LZAVersion:
@@ -44,6 +44,39 @@ Resources:
               Bool:
                 'aws:SecureTransport': 'false'
 
+  LZASourceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+
+  LZASourceBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LZASourceBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnforceTLSRequestsOnly
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub '${LZASourceBucket.Arn}'
+              - !Sub '${LZASourceBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+
   CodeBuildValidatorRole:
     Type: AWS::IAM::Role
     Properties:
@@ -67,10 +100,18 @@ Resources:
                 Resource: !Sub '${PRValidationBucket.Arn}/*'
               - Effect: Allow
                 Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:ListBucket
+                Resource:
+                  - !Sub '${LZASourceBucket.Arn}'
+                  - !Sub '${LZASourceBucket.Arn}/*'
+              - Effect: Allow
+                Action:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
               - Effect: Allow
                 Action:
                   - organizations:DescribeOrganization
@@ -85,6 +126,11 @@ Resources:
                   - ec2:DescribeRegions
                   - ec2:DescribeAvailabilityZones
                 Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::*:role/AWSControlTowerExecution'
 
   LZAValidationProject:
     Type: AWS::CodeBuild::Project
@@ -101,20 +147,22 @@ Resources:
           - LOCAL_SOURCE_CACHE
       Environment:
         Type: LINUX_CONTAINER
-        ComputeType: BUILD_GENERAL1_LARGE  # 8 vCPUs, 15 GB RAM
+        ComputeType: BUILD_GENERAL1_MEDIUM  # 4 vCPUs, 7 GB RAM
         Image: aws/codebuild/standard:7.0
         EnvironmentVariables:
           - Name: LZA_VERSION
             Value: !Ref LZAVersion
+          - Name: LZA_SOURCE_BUCKET
+            Value: !Ref LZASourceBucket
           - Name: AWS_PARTITION
-            Value: 'aws'
+            Value: !Ref 'AWS::Partition'
           - Name: NODE_OPTIONS
-            Value: '--max-old-space-size=6144'
+            Value: '--max-old-space-size=4096'
       Source:
         Type: S3
         Location: !Sub '${PRValidationBucket}/default.zip'
         BuildSpec: buildspec.yml
-      TimeoutInMinutes: 30
+      TimeoutInMinutes: 20
 
   GitHubActionsUser:
     Type: AWS::IAM::User
@@ -136,7 +184,7 @@ Resources:
                   - logs:GetLogEvents
                 Resource:
                   - !GetAtt LZAValidationProject.Arn
-                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/LZA-PR-Validator:*'
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/LZA-PR-Validator:*'
 
   GitHubActionsAccessKey:
     Type: AWS::IAM::AccessKey
@@ -146,6 +194,8 @@ Resources:
 Outputs:
   ValidationS3BucketName:
     Value: !Ref PRValidationBucket
+  LZASourceBucketName:
+    Value: !Ref LZASourceBucket
   GitHubActionsAccessKeyId:
     Value: !Ref GitHubActionsAccessKey
   GitHubActionsSecretAccessKey:

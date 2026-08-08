@@ -3,13 +3,12 @@ version: 0.2
 env:
   variables:
     LZA_VERSION: "v1.16.0"
-    AWS_PARTITION: "aws"
-    NODE_OPTIONS: "--max-old-space-size=6144"
+    NODE_OPTIONS: "--max-old-space-size=4096"
 
 phases:
   install:
     runtime-versions:
-      nodejs: 20
+      nodejs: 22
       python: 3.11
     commands:
       - echo "Checking system dependencies..."

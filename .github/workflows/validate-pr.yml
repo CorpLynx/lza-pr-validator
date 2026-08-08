@@ -23,8 +23,8 @@ jobs:
     name: Package & Run CodeBuild Pre-Check
     runs-on: ubuntu-latest
     env:
-      AWS_REGION: "us-east-1"
-      S3_BUCKET: "lza-pr-validator-prvalidationbucket-ur8tsvoxzi6z"
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      S3_BUCKET: ${{ secrets.S3_BUCKET }}
 
     steps:
       - name: Checkout PR Configuration Code
@@ -59,10 +59,43 @@ jobs:
           echo "build_id=${BUILD_ID}" >> $GITHUB_OUTPUT
           echo "Started CodeBuild: ${BUILD_ID}"
 
-          # Poll until build completes
+          # Get log group/stream info
+          LOG_GROUP="/aws/codebuild/LZA-PR-Validator"
+          LOG_STREAM=$(echo "${BUILD_ID}" | cut -d: -f2)
+          NEXT_TOKEN=""
+
+          # Poll until build completes, streaming logs
           while true; do
             STATUS=$(aws codebuild batch-get-builds --ids "${BUILD_ID}" --query 'builds[0].buildStatus' --output text)
+
+            # Stream available log events
+            if [ -z "${NEXT_TOKEN}" ]; then
+              LOG_OUTPUT=$(aws logs get-log-events \
+                --log-group-name "${LOG_GROUP}" \
+                --log-stream-name "${LOG_STREAM}" \
+                --start-from-head \
+                --output json 2>/dev/null || echo '{"events":[],"nextForwardToken":""}')
+            else
+              LOG_OUTPUT=$(aws logs get-log-events \
+                --log-group-name "${LOG_GROUP}" \
+                --log-stream-name "${LOG_STREAM}" \
+                --next-token "${NEXT_TOKEN}" \
+                --start-from-head \
+                --output json 2>/dev/null || echo '{"events":[],"nextForwardToken":""}')
+            fi
+
+            # Print new log lines
+            echo "${LOG_OUTPUT}" | jq -r '.events[].message // empty' 2>/dev/null | while IFS= read -r line; do
+              echo "  ${line}"
+            done
+
+            NEW_TOKEN=$(echo "${LOG_OUTPUT}" | jq -r '.nextForwardToken // empty' 2>/dev/null)
+            if [ -n "${NEW_TOKEN}" ]; then
+              NEXT_TOKEN="${NEW_TOKEN}"
+            fi
+
             if [ "${STATUS}" != "IN_PROGRESS" ]; then
+              echo ""
               echo "Build finished with status: ${STATUS}"
               if [ "${STATUS}" != "SUCCEEDED" ]; then
                 echo "::error::CodeBuild validation failed with status: ${STATUS}"
@@ -70,5 +103,5 @@ jobs:
               fi
               break
             fi
-            sleep 15
+            sleep 10
           done
