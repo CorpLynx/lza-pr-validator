@@ -1,0 +1,55 @@
+name: Validate LZA Configuration PR
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '**.yaml'
+      - '**.yml'
+      - '**.json'
+      - 'validate-lza.sh'
+      - 'buildspec.yml'
+
+# Auto-cancel in-progress runs for the same PR when new commits are pushed
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate-lza-pr:
+    name: Package & Run CodeBuild Pre-Check
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: "us-east-1"
+      S3_BUCKET: "lza-pr-validator-prvalidationbucket-ur8tsvoxzi6z"
+
+    steps:
+      - name: Checkout PR Configuration Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Zip PR Configuration Files
+        run: |
+          zip -q -r pr-config.zip . -x "*.git*"
+
+      - name: Upload PR Zip to S3
+        id: upload
+        run: |
+          S3_KEY="prs/${{ github.event.pull_request.number }}/${{ github.sha }}.zip"
+          aws s3 cp pr-config.zip "s3://${{ env.S3_BUCKET }}/${S3_KEY}" --only-show-errors
+          echo "s3_location=${{ env.S3_BUCKET }}/${S3_KEY}" >> $GITHUB_OUTPUT
+
+      - name: Execute AWS CodeBuild Validation
+        uses: aws-actions/aws-codebuild-run-build@v1
+        with:
+          project-name: LZA-PR-Validator
+          source-location-override: ${{ steps.upload.outputs.s3_location }}

@@ -1,0 +1,26 @@
+version: 0.2
+
+env:
+  variables:
+    LZA_VERSION: "v1.16.0"
+    AWS_PARTITION: "aws"
+    NODE_OPTIONS: "--max-old-space-size=6144"
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 20
+      python: 3.11
+    commands:
+      - echo "Checking system dependencies..."
+      - command -v yamllint >/dev/null 2>&1 || pip install --quiet yamllint
+      - command -v cdk >/dev/null 2>&1 || npm install --global yarn aws-cdk
+      - chmod +x ./validate-lza.sh
+  build:
+    commands:
+      - ./validate-lza.sh $CODEBUILD_SRC_DIR
+
+cache:
+  paths:
+    - '/root/.cache/yarn/**/*'
+    - '/tmp/lza-validation/**/*'

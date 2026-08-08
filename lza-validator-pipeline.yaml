@@ -1,0 +1,154 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Hardened S3 + CodeBuild validation engine with caching and large compute for LZA PR checks'
+
+Parameters:
+  LZAVersion:
+    Type: String
+    Default: 'v1.16.0'
+    Description: 'Release tag of awslabs/landing-zone-accelerator-on-aws to validate against'
+
+Resources:
+  PRValidationBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: CleanUpOldPrZips
+            Status: Enabled
+            ExpirationInDays: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  PRValidationBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref PRValidationBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnforceTLSRequestsOnly
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub '${PRValidationBucket.Arn}'
+              - !Sub '${PRValidationBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+
+  CodeBuildValidatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LZA-PR-Validator-CodeBuild-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LZAValidatorPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub '${PRValidationBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+              - Effect: Allow
+                Action:
+                  - organizations:DescribeOrganization
+                  - organizations:ListAccounts
+                  - organizations:ListRoots
+                  - organizations:ListOrganizationalUnitsForParent
+                  - organizations:ListChildren
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                  - sts:GetCallerIdentity
+                  - ec2:DescribeRegions
+                  - ec2:DescribeAvailabilityZones
+                Resource: '*'
+
+  LZAValidationProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: LZA-PR-Validator
+      Description: 'Validates LZA PR configs from S3 archive using yamllint, validate-config, and concurrent cdk synth'
+      ServiceRole: !GetAtt CodeBuildValidatorRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Cache:
+        Type: LOCAL
+        Modes:
+          - LOCAL_CUSTOM_CACHE
+          - LOCAL_SOURCE_CACHE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_LARGE # 8 vCPUs, 15 GB RAM
+        Image: aws/codebuild/standard:7.0
+        EnvironmentVariables:
+          - Name: LZA_VERSION
+            Value: !Ref LZAVersion
+          - Name: AWS_PARTITION
+            Value: 'aws'
+          - Name: NODE_OPTIONS
+            Value: '--max-old-space-size=6144'
+      Source:
+        Type: S3
+        Location: !Sub '${PRValidationBucket}/default.zip'
+        BuildSpec: buildspec.yml
+      TimeoutInMinutes: 30
+
+  GitHubActionsUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: GHA-LZA-PR-Validator-User
+      Policies:
+        - PolicyName: S3UploadAndCodeBuildInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub '${PRValidationBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                  - logs:GetLogEvents
+                Resource:
+                  - !GetAtt LZAValidationProject.Arn
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/LZA-PR-Validator:*'
+
+  GitHubActionsAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref GitHubActionsUser
+
+Outputs:
+  ValidationS3BucketName:
+    Value: !Ref PRValidationBucket
+  GitHubActionsAccessKeyId:
+    Value: !Ref GitHubActionsAccessKey
+  GitHubActionsSecretAccessKey:
+    Value: !GetAtt GitHubActionsAccessKey.SecretAccessKey
+  CodeBuildProjectName:
+    Value: !Ref LZAValidationProject
