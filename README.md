@@ -36,3 +36,7 @@ This architecture uses GitHub Actions to package your LZA configuration and AWS 
 
 ### Step 4: Commit and Push
 Commit all added files to your repository. Any new Pull Requests opened against the `main` branch will automatically trigger this validation pipeline.
+
+## Test
+
+Triggering validation pipeline.
