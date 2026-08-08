@@ -2,7 +2,7 @@ customizations:
   cloudFormationStacks:
     - deploymentTargets:
         organizationalUnits:
-          - Workloads
+          - Infrastructure
       description: Deploy KMS keys for application encryption
       name: Custom-KMS-Keys
       regions:
@@ -13,7 +13,6 @@ customizations:
 
     - deploymentTargets:
         organizationalUnits:
-          - Workloads
           - Infrastructure
       description: Deploy cross-account IAM roles for CI/CD pipelines
       name: Custom-IAM-Roles
@@ -25,7 +24,7 @@ customizations:
 
     - deploymentTargets:
         accounts:
-          - SharedServices
+          - Management
       description: Deploy IAM users for service accounts
       name: Custom-IAM-Users
       regions:

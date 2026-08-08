@@ -3,9 +3,6 @@ enable: true
 organizationalUnits:
   - name: Security
   - name: Infrastructure
-  - name: Workloads
-  - name: Suspended
-    ignore: true
 
 quarantineNewAccounts:
   enable: true
@@ -29,7 +26,6 @@ serviceControlPolicies:
       organizationalUnits:
         - Security
         - Infrastructure
-        - Workloads
   - name: Quarantine
     description: >
       Restrictive SCP applied to new accounts before accelerator runs
@@ -46,7 +42,7 @@ resourceControlPolicies:
     type: customerManaged
     deploymentTargets:
       organizationalUnits:
-        - Workloads
+        - Infrastructure
 
 taggingPolicies: []
 backupPolicies: []

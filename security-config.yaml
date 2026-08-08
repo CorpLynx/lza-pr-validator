@@ -47,11 +47,11 @@ centralSecurityServices:
     documentSets: []
   snsSubscriptions:
     - level: High
-      email: security-high@example.com
+      email: brichard4243@outlook.com
     - level: Medium
-      email: security-medium@example.com
+      email: brichard4243@outlook.com
     - level: Low
-      email: security-low@example.com
+      email: brichard4243@outlook.com
 
 accessAnalyzer:
   enable: true
@@ -90,7 +90,7 @@ keyManagementService:
       removalPolicy: retain
       deploymentTargets:
         organizationalUnits:
-          - Workloads
+          - Infrastructure
     - name: EbsEncryptionKey
       alias: accelerator/ebs/encryption
       policy: kms/ebs-encryption-key-policy.json
@@ -101,4 +101,3 @@ keyManagementService:
       deploymentTargets:
         organizationalUnits:
           - Infrastructure
-          - Workloads

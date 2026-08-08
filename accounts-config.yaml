@@ -1,47 +1,23 @@
 mandatoryAccounts:
   - name: Management
     description: The management (primary) account
-    email: corplynx-management@example.com
+    email: brichard4243@outlook.com
     organizationalUnit: Root
   - name: LogArchive
     description: The centralized logging account
-    email: corplynx-logarchive@example.com
+    email: logarchive4243@outlook.com
     organizationalUnit: Security
   - name: Audit
     description: The security audit account
-    email: corplynx-audit@example.com
+    email: Audit4243@outlook.com
     organizationalUnit: Security
 
-workloadAccounts:
-  - name: SharedServices
-    description: Shared infrastructure services
-    email: corplynx-shared-services@example.com
-    organizationalUnit: Infrastructure
-  - name: Network
-    description: Core networking account
-    email: corplynx-network@example.com
-    organizationalUnit: Infrastructure
-  - name: DevWorkloads
-    description: Development workloads account
-    email: corplynx-dev-workloads@example.com
-    organizationalUnit: Workloads
-  - name: ProdWorkloads
-    description: Production workloads account
-    email: corplynx-prod-workloads@example.com
-    organizationalUnit: Workloads
+workloadAccounts: []
 
 accountIds:
-  - email: corplynx-management@example.com
+  - email: brichard4243@outlook.com
     accountId: '930738198822'
-  - email: corplynx-logarchive@example.com
-    accountId: '111111111111'
-  - email: corplynx-audit@example.com
-    accountId: '222222222222'
-  - email: corplynx-shared-services@example.com
-    accountId: '333333333333'
-  - email: corplynx-network@example.com
-    accountId: '444444444444'
-  - email: corplynx-dev-workloads@example.com
-    accountId: '555555555555'
-  - email: corplynx-prod-workloads@example.com
-    accountId: '666666666666'
+  - email: logarchive4243@outlook.com
+    accountId: '236292170987'
+  - email: Audit4243@outlook.com
+    accountId: '435976456577'

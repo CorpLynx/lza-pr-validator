@@ -32,7 +32,7 @@ snsTopics:
   topics:
     - name: Security
       emailAddresses:
-        - security-notifications@example.com
+        - brichard4243@outlook.com
 
 tags:
   - key: Environment
@@ -75,7 +75,7 @@ reports:
           threshold: 90
           comparisonOperator: GREATER_THAN
           subscriptionType: EMAIL
-          address: billing@example.com
+          address: brichard4243@outlook.com
 
 backup:
   vaults:
