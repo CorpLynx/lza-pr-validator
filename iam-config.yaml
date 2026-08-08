@@ -1,0 +1,53 @@
+policySets:
+  - deploymentTargets:
+      organizationalUnits:
+        - Root
+    policies:
+      - name: BoundaryPolicy
+        policy: iam-policies/boundary-policy.json
+
+roleSets:
+  - deploymentTargets:
+      organizationalUnits:
+        - Root
+    roles:
+      - name: EC2-Default-SSM-Role
+        instanceProfile: true
+        assumedBy:
+          - type: service
+            principal: ec2.amazonaws.com
+        policies:
+          awsManaged:
+            - AmazonSSMManagedInstanceCore
+            - CloudWatchAgentServerPolicy
+        boundaryPolicy: BoundaryPolicy
+      - name: Backup-Role
+        assumedBy:
+          - type: service
+            principal: backup.amazonaws.com
+        policies:
+          awsManaged:
+            - service-role/AWSBackupServiceRolePolicyForBackup
+            - service-role/AWSBackupServiceRolePolicyForRestores
+
+groupSets:
+  - deploymentTargets:
+      accounts:
+        - Management
+    groups:
+      - name: Administrators
+        policies:
+          awsManaged:
+            - AdministratorAccess
+
+userSets:
+  - deploymentTargets:
+      accounts:
+        - Management
+    users:
+      - username: breakGlassUser01
+        group: Administrators
+        boundaryPolicy: BoundaryPolicy
+      - username: breakGlassUser02
+        group: Administrators
+        boundaryPolicy: BoundaryPolicy

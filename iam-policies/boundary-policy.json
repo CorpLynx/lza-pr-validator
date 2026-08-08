@@ -1,0 +1,31 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowAllActionsWithBoundary",
+      "Effect": "Allow",
+      "Action": "*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyAccessToManagementResources",
+      "Effect": "Deny",
+      "Action": [
+        "organizations:*",
+        "account:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyModifyBoundaryPolicy",
+      "Effect": "Deny",
+      "Action": [
+        "iam:DeletePolicy",
+        "iam:DeletePolicyVersion",
+        "iam:CreatePolicyVersion",
+        "iam:SetDefaultPolicyVersion"
+      ],
+      "Resource": "arn:aws:iam::*:policy/BoundaryPolicy"
+    }
+  ]
+}

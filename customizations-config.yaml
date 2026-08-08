@@ -1,0 +1,35 @@
+customizations:
+  cloudFormationStacks:
+    - deploymentTargets:
+        organizationalUnits:
+          - Workloads
+      description: Deploy KMS keys for application encryption
+      name: Custom-KMS-Keys
+      regions:
+        - us-east-1
+      runOrder: 1
+      template: cloudformation-templates/kms-keys.yaml
+      terminationProtection: true
+
+    - deploymentTargets:
+        organizationalUnits:
+          - Workloads
+          - Infrastructure
+      description: Deploy cross-account IAM roles for CI/CD pipelines
+      name: Custom-IAM-Roles
+      regions:
+        - us-east-1
+      runOrder: 2
+      template: cloudformation-templates/iam-roles.yaml
+      terminationProtection: false
+
+    - deploymentTargets:
+        accounts:
+          - SharedServices
+      description: Deploy IAM users for service accounts
+      name: Custom-IAM-Users
+      regions:
+        - us-east-1
+      runOrder: 3
+      template: cloudformation-templates/iam-users.yaml
+      terminationProtection: false
