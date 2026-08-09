@@ -414,7 +414,7 @@ short_stack() {
 # Delete all LZA stacks in a region using a dependency-resolving retry loop.
 teardown_stacks_in_region() {
   local region="$1"
-  local attempts=0 line stacks s i rc retain retain_ids counts disp
+  local attempts=0 line stacks s i rc retain_ids counts disp bkt
   # Re-list and retry (dependency-safe) up to 6 times until nothing remains.
   while [ "$attempts" -lt 6 ]; do
     attempts=$((attempts + 1))
@@ -442,25 +442,45 @@ teardown_stacks_in_region() {
           STAT_STACKS=$((STAT_STACKS + 1))
         else
           printf "%sDELETE_FAILED%s\n" "$c_red" "$c_rst"
-          # Retry retaining the resources that could not delete.
-          retain=$(aws cloudformation describe-stack-events --stack-name "$s" --region "$region" \
-                    --query "StackEvents[?ResourceStatus=='DELETE_FAILED'].LogicalResourceId" \
-                    --output text 2>/dev/null | tr '\t' ' ')
-          if [ -n "$retain" ]; then
-            warn "retrying $s while retaining: $retain"
-            read -ra retain_ids <<< "$retain"
-            aws cloudformation delete-stack --stack-name "$s" --region "$region" \
-              --role-arn "$DELETION_ROLE_ARN" --retain-resources "${retain_ids[@]}" >/dev/null 2>&1 || true
-            printf "Removing %s (retry)... " "$(fit "$disp" "$(avail_for 37)")"
-            if wait_stack_gone "$region" "$s"; then
-              printf "(retained %d resources)\n" "${#retain_ids[@]}"
-              STAT_STACKS=$((STAT_STACKS + 1))
+          # Most stack-delete failures are non-empty S3 buckets the stack owns.
+          # Empty any failed buckets, then retry the delete before giving up.
+          for bkt in $(aws cloudformation describe-stack-resources --stack-name "$s" --region "$region" \
+                       --query "StackResources[?ResourceStatus=='DELETE_FAILED' && ResourceType=='AWS::S3::Bucket'].PhysicalResourceId" \
+                       --output text 2>/dev/null | tr '\t' '\n'); do
+            [ -z "$bkt" ] && continue
+            aws s3api delete-bucket-policy --bucket "$bkt" >/dev/null 2>&1 || true
+            empty_bucket "$bkt"
+          done
+          issue_stack_delete "$region" "$s"
+          printf "Removing %s (retry)... " "$(fit "$disp" "$(avail_for 37)")"
+          if wait_stack_gone "$region" "$s"; then
+            printf "%sok%s\n" "$c_grn" "$c_rst"
+            STAT_STACKS=$((STAT_STACKS + 1))
+          else
+            printf "%sfailed%s\n" "$c_red" "$c_rst"
+            # Last resort: retain only the resources that still won't delete
+            # (deduped; never the stack's own AWS::CloudFormation::Stack entry).
+            retain_ids=()
+            while IFS= read -r line; do
+              [ -n "$line" ] && retain_ids+=("$line")
+            done < <(aws cloudformation describe-stack-resources --stack-name "$s" --region "$region" \
+                     --query "StackResources[?ResourceStatus=='DELETE_FAILED' && ResourceType!='AWS::CloudFormation::Stack'].LogicalResourceId" \
+                     --output text 2>/dev/null | tr '\t' '\n' | sort -u)
+            if [ "${#retain_ids[@]}" -gt 0 ]; then
+              warn "retaining un-deletable resources: ${retain_ids[*]}"
+              aws cloudformation delete-stack --stack-name "$s" --region "$region" \
+                --role-arn "$DELETION_ROLE_ARN" --retain-resources "${retain_ids[@]}" >/dev/null 2>&1 || true
+              printf "Removing %s (retain)... " "$(fit "$disp" "$(avail_for 38)")"
+              if wait_stack_gone "$region" "$s"; then
+                printf "%sok (retained %d)%s\n" "$c_dim" "${#retain_ids[@]}" "$c_rst"
+                STAT_STACKS=$((STAT_STACKS + 1))
+              else
+                printf "%sfailed%s\n" "$c_red" "$c_rst"
+                STAT_FAILED=$((STAT_FAILED + 1))
+              fi
             else
-              printf "%sfailed%s\n" "$c_red" "$c_rst"
               STAT_FAILED=$((STAT_FAILED + 1))
             fi
-          else
-            STAT_FAILED=$((STAT_FAILED + 1))
           fi
         fi
       done
