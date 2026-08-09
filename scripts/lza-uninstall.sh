@@ -472,9 +472,9 @@ teardown_buckets() {
     if is_validator "$b"; then preserved "bucket $disp"; continue; fi
     if [ "$EXECUTE" = true ]; then
       printf "Removing bucket %s... " "$(fit "$disp" "$(avail_for 28)")"
-      empty_bucket "$b"
-      # drop any deny bucket-policy that would block deletion (best-effort)
+      # drop any deny bucket-policy first (it may block object/bucket deletion)
       aws s3api delete-bucket-policy --bucket "$b" >/dev/null 2>&1 || true
+      empty_bucket "$b"
       if aws s3api delete-bucket --bucket "$b" >/dev/null 2>&1; then
         printf "%sok%s\n" "$c_grn" "$c_rst"
         STAT_BUCKETS=$((STAT_BUCKETS + 1))
