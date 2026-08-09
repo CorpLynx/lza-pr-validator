@@ -447,16 +447,29 @@ teardown_stacks_in_region() {
 # Fully empty a versioned bucket: delete every object version and delete marker
 # in pages of <=1000 (the delete-objects limit), looping until nothing remains.
 empty_bucket() {
-  local b="$1" page n prop
-  for prop in Versions DeleteMarkers; do
-    while :; do
-      page=$(aws s3api list-object-versions --bucket "$b" --max-items 1000 \
-             --query "{Objects: ${prop}[].{Key:Key,VersionId:VersionId}}" --output json 2>/dev/null)
-      [ -z "$page" ] && break
-      n=$(echo "$page" | jq -r '(.Objects // []) | length' 2>/dev/null || echo 0)
-      [ "${n:-0}" = "0" ] && break
-      aws s3api delete-objects --bucket "$b" --delete "$page" >/dev/null 2>&1 || break
+  local b="$1" prop all total i end chunk attempts remaining
+  # A few passes catch objects written while we work (log buckets keep arriving).
+  attempts=0
+  while [ "$attempts" -lt 3 ]; do
+    attempts=$((attempts + 1))
+    remaining=0
+    for prop in Versions DeleteMarkers; do
+      all=$(aws s3api list-object-versions --bucket "$b" \
+            --query "${prop}[].{Key:Key,VersionId:VersionId}" --output json 2>/dev/null)
+      [ -z "$all" ] && continue
+      total=$(echo "$all" | jq 'length' 2>/dev/null || echo 0)
+      [ "${total:-0}" = "0" ] && continue
+      remaining=$((remaining + total))
+      # delete-objects accepts at most 1000 keys per call: slice into batches.
+      i=0
+      while [ "$i" -lt "$total" ]; do
+        end=$((i + 1000))
+        chunk=$(echo "$all" | jq -c --argjson s "$i" --argjson e "$end" '{Objects: .[$s:$e]}')
+        aws s3api delete-objects --bucket "$b" --delete "$chunk" >/dev/null 2>&1 || true
+        i=$end
+      done
     done
+    [ "$remaining" = "0" ] && break
   done
   # sweep any remaining current (non-versioned) objects
   aws s3 rm "s3://$b" --recursive >/dev/null 2>&1 || true
