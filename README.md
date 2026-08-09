@@ -32,14 +32,41 @@ GitHub PR ──▶ GitHub Actions ──▶ S3 (config zip) ──▶ CodeBuild
 - **Least-privilege Synth Role** — Scoped to `AWSAccelerator-*` DynamoDB tables, `/accelerator/*` SSM params, and `AWSControlTowerExecution` cross-account role only.
 - **No idle cost** — Pure pay-per-use CodeBuild; ~$4/month at 200 PRs/month, near-zero when idle.
 
+## Repository Layout
+
+```
+.
+├── lza-validator-pipeline.yaml      # CloudFormation: infra for the validation engine
+├── validate-lza.sh                  # 3-layer validation script run by CodeBuild
+├── buildspec.yml                    # CodeBuild build specification
+├── .github/workflows/validate-pr.yml # Example GitHub Actions workflow
+├── docs/                            # Roadmap + interim AI prompt
+└── example-config/                  # Sample LZA configuration repo layout
+    ├── accounts-config.yaml
+    ├── global-config.yaml
+    ├── iam-config.yaml
+    ├── network-config.yaml
+    ├── organization-config.yaml
+    ├── security-config.yaml
+    ├── customizations-config.yaml
+    ├── cloudformation-templates/
+    ├── iam-policies/
+    ├── kms/
+    ├── resource-control-policies/
+    └── service-control-policies/
+```
+
+The four files at the root (`lza-validator-pipeline.yaml`, `validate-lza.sh`, `buildspec.yml`, and the workflow) are the **distributable tooling**. Copy the script, buildspec, and workflow into your real LZA configuration repository (where the config files live at the root). `example-config/` shows what that consumer repo looks like.
+
 ## Components
 
 | File | Purpose |
 |------|---------|
 | `lza-validator-pipeline.yaml` | CloudFormation: S3 buckets, CodeBuild projects, IAM roles, GitHub Actions user |
-| `validate-lza.sh` | The 3-layer validation script run by CodeBuild |
+| `validate-lza.sh` | The 3-layer validation script run by CodeBuild (accepts config dir as `$1`) |
 | `buildspec.yml` | CodeBuild build specification |
-| `.github/workflows/validate-pr.yml` | GitHub Actions workflow triggered on PRs |
+| `.github/workflows/validate-pr.yml` | Example GitHub Actions workflow triggered on PRs |
+| `example-config/` | Reference LZA configuration used for testing/demonstration |
 
 ## Deployment Instructions
 
