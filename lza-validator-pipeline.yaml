@@ -306,8 +306,9 @@ Resources:
                 - npm install --global yarn
             build:
               commands:
-                - echo "Cloning LZA ${LZA_VERSION} source..."
-                - git clone --depth 1 --branch "release/${LZA_VERSION}" https://github.com/awslabs/landing-zone-accelerator-on-aws.git /tmp/lza-source
+                - echo "Downloading LZA ${LZA_VERSION} source from S3..."
+                - mkdir -p /tmp/lza-source
+                - aws s3 cp s3://${LZA_SOURCE_BUCKET}/lza-${LZA_VERSION}-src.tar.gz - | tar -xz -C /tmp/lza-source
                 - cd /tmp/lza-source/source
                 - echo "Installing dependencies..."
                 - yarn install --frozen-lockfile
