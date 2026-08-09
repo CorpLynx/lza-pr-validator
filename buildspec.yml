@@ -13,6 +13,9 @@ phases:
     commands:
       - command -v yamllint >/dev/null 2>&1 || pip install --quiet yamllint
       - command -v yarn >/dev/null 2>&1 || npm install --global yarn
+      # Optional: install cfn-guard so Layer 4 activates when guard-rules/ are present.
+      # Non-fatal if the install fails - Layer 4 skips cleanly without cfn-guard.
+      - command -v cfn-guard >/dev/null 2>&1 || (curl -sSL --fail https://raw.githubusercontent.com/aws-cloudformation/cloudformation-guard/main/install-guard.sh | sh && ln -sf "$HOME/.guard/bin/cfn-guard" /usr/local/bin/cfn-guard) || echo "cfn-guard install skipped; Layer 4 will be skipped"
       - chmod +x ./scripts/validate-config-pr.sh
   build:
     commands:

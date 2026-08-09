@@ -152,6 +152,36 @@ if [ ${STAGE_STATUS} -ne 0 ]; then
   exit 1
 fi
 
+SYNTH_OUT="$(pwd)/cdk.out"
+
+# ---------------------------------------------------------------------------
+# LAYER 4 (optional): cfn-guard policy compliance
+# Runs only when cfn-guard is available AND the config repo ships guard rules.
+# Fully opt-in: absent tooling or rules => skipped, never blocks existing flow.
+# ---------------------------------------------------------------------------
+echo "=========================================================="
+echo "LAYER 4: CFN Guard Policy Compliance (optional)"
+echo "=========================================================="
+
+GUARD_RULES_DIR="${CONFIG_DIR}/guard-rules"
+
+if ! command -v cfn-guard >/dev/null 2>&1; then
+  echo "SKIP: cfn-guard not installed - skipping policy compliance layer."
+elif [ ! -d "${GUARD_RULES_DIR}" ] || [ -z "$(ls -A "${GUARD_RULES_DIR}"/*.guard 2>/dev/null)" ]; then
+  echo "SKIP: no ${GUARD_RULES_DIR}/*.guard rules found - skipping policy compliance layer."
+elif [ ! -d "${SYNTH_OUT}" ]; then
+  echo "SKIP: no synth output at ${SYNTH_OUT} - skipping policy compliance layer."
+else
+  echo "Running cfn-guard against ${SYNTH_OUT} with rules in ${GUARD_RULES_DIR}"
+  if cfn-guard validate --data "${SYNTH_OUT}" --rules "${GUARD_RULES_DIR}" --show-summary fail; then
+    echo "PASS: All CFN Guard rules satisfied."
+  else
+    echo "ERROR: CFN Guard policy violations detected."
+    exit 1
+  fi
+fi
+print_time
+
 echo "=========================================================="
 echo "SUCCESS: All LZA configurations validated and synthesized."
 print_time
