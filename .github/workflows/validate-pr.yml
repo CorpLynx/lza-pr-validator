@@ -7,7 +7,7 @@ on:
       - '**.yaml'
       - '**.yml'
       - '**.json'
-      - 'validate-lza.sh'
+      - 'scripts/validate-config-pr.sh'
       - 'buildspec.yml'
 
 # Auto-cancel in-progress runs for the same PR when new commits are pushed
@@ -25,6 +25,9 @@ jobs:
     env:
       AWS_REGION: ${{ secrets.AWS_REGION }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
+      # CodeBuild project name. Defaults to the LZA-native name; override via secret
+      # if you deployed with a custom AcceleratorPrefix.
+      CODEBUILD_PROJECT: ${{ secrets.CODEBUILD_PROJECT || 'AWSAccelerator-ConfigValidator' }}
 
     steps:
       - name: Checkout PR Configuration Code
@@ -52,7 +55,7 @@ jobs:
         id: codebuild
         run: |
           BUILD_ID=$(aws codebuild start-build \
-            --project-name LZA-PR-Validator \
+            --project-name "${CODEBUILD_PROJECT}" \
             --source-type-override S3 \
             --source-location-override "${{ env.S3_BUCKET }}/prs/${{ github.event.pull_request.number }}/${{ github.sha }}.zip" \
             --query 'build.id' --output text)
@@ -60,7 +63,7 @@ jobs:
           echo "Started CodeBuild: ${BUILD_ID}"
 
           # Get log group/stream info
-          LOG_GROUP="/aws/codebuild/LZA-PR-Validator"
+          LOG_GROUP="/aws/codebuild/${CODEBUILD_PROJECT}"
           LOG_STREAM=$(echo "${BUILD_ID}" | cut -d: -f2)
           NEXT_TOKEN=""
 

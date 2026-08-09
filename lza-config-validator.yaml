@@ -1,0 +1,577 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Landing Zone Accelerator Config Validator - pre-merge configuration validation engine (S3 + CodeBuild)'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Accelerator Settings
+        Parameters:
+          - AcceleratorPrefix
+          - AcceleratorBucketPrefix
+          - AcceleratorSsmPrefix
+          - LzaVersion
+          - ManagementAccountAccessRole
+          - OrganizationId
+      - Label:
+          default: Security Options
+        Parameters:
+          - PermissionBoundaryPolicyName
+      - Label:
+          default: Compute & Retention
+        Parameters:
+          - ValidationComputeType
+          - SourceBuilderComputeType
+          - PRZipRetentionDays
+    ParameterLabels:
+      AcceleratorPrefix:
+        default: Accelerator Resource name prefix
+      AcceleratorBucketPrefix:
+        default: Accelerator S3 bucket name prefix
+      AcceleratorSsmPrefix:
+        default: Accelerator SSM parameter path prefix
+      LzaVersion:
+        default: Landing Zone Accelerator version
+      ManagementAccountAccessRole:
+        default: Management account access role name
+      OrganizationId:
+        default: AWS Organization ID (optional)
+      PermissionBoundaryPolicyName:
+        default: Permission boundary policy name (optional)
+      ValidationComputeType:
+        default: Validation CodeBuild compute type
+      SourceBuilderComputeType:
+        default: Source builder CodeBuild compute type
+      PRZipRetentionDays:
+        default: PR archive retention (days)
+
+Parameters:
+  AcceleratorPrefix:
+    Type: String
+    Default: 'AWSAccelerator'
+    AllowedPattern: '[A-Za-z0-9-]+'
+    MaxLength: 15
+    Description: >
+      The prefix value for validator resources. Match the AcceleratorPrefix used by your LZA installer.
+      Used for IAM roles, CodeBuild projects, and log groups (PascalCase). Cannot start with "aws" or "ssm".
+
+  AcceleratorBucketPrefix:
+    Type: String
+    Default: 'aws-accelerator'
+    AllowedPattern: '[a-z0-9-]+'
+    Description: 'Lowercase prefix for S3 bucket names. Match your LZA installer (default: aws-accelerator).'
+
+  AcceleratorSsmPrefix:
+    Type: String
+    Default: '/accelerator'
+    AllowedPattern: '\/[a-zA-Z0-9-]+'
+    Description: 'SSM parameter path prefix (with leading slash). Match your LZA installer (default: /accelerator).'
+
+  LzaVersion:
+    Type: String
+    Default: 'v1.16.0'
+    Description: 'Release tag of the Landing Zone Accelerator to validate against.'
+
+  ManagementAccountAccessRole:
+    Type: String
+    Default: 'AWSControlTowerExecution'
+    Description: >
+      Name of the cross-account role the validator assumes in member accounts during synthesis.
+      Matches globalConfig.managementAccountAccessRole (e.g. AWSControlTowerExecution or OrganizationAccountAccessRole).
+
+  OrganizationId:
+    Type: String
+    Default: ''
+    Description: >
+      Optional AWS Organization ID (e.g. o-xxxxxxxxxx). When provided, IAM trust is restricted with an
+      aws:PrincipalOrgID condition, matching LZA's organization-scoped access pattern.
+
+  PermissionBoundaryPolicyName:
+    Type: String
+    Default: ''
+    Description: >
+      Optional IAM permission boundary policy name applied to every role this stack creates.
+      Mirrors LZA's opt-in permission boundary. Leave blank to skip.
+
+  ValidationComputeType:
+    Type: String
+    Default: 'BUILD_GENERAL1_MEDIUM'
+    AllowedValues:
+      - BUILD_GENERAL1_SMALL
+      - BUILD_GENERAL1_MEDIUM
+      - BUILD_GENERAL1_LARGE
+    Description: 'Compute size for validation runs (pre-built bundle needs MEDIUM or higher).'
+
+  SourceBuilderComputeType:
+    Type: String
+    Default: 'BUILD_GENERAL1_LARGE'
+    AllowedValues:
+      - BUILD_GENERAL1_MEDIUM
+      - BUILD_GENERAL1_LARGE
+      - BUILD_GENERAL1_2XLARGE
+    Description: 'Compute size for the source builder (compiles LZA packages; needs LARGE or higher).'
+
+  PRZipRetentionDays:
+    Type: Number
+    Default: 7
+    MinValue: 1
+    Description: 'Days to retain uploaded PR config zips before lifecycle expiry.'
+
+Conditions:
+  UseOrgId: !Not [!Equals [!Ref OrganizationId, '']]
+  UsePermissionBoundary: !Not [!Equals [!Ref PermissionBoundaryPolicyName, '']]
+
+Resources:
+  #
+  # S3 Buckets
+  #
+  ValidationBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AcceleratorBucketPrefix}-config-validator-${AWS::AccountId}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: CleanUpOldPrZips
+            Status: Enabled
+            ExpirationInDays: !Ref PRZipRetentionDays
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Accelerator
+          Value: !Ref AcceleratorPrefix
+
+  ValidationBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ValidationBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnforceTLSRequestsOnly
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub '${ValidationBucket.Arn}'
+              - !Sub '${ValidationBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+
+  SourceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AcceleratorBucketPrefix}-config-validator-source-${AWS::AccountId}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Accelerator
+          Value: !Ref AcceleratorPrefix
+
+  SourceBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SourceBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnforceTLSRequestsOnly
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub '${SourceBucket.Arn}'
+              - !Sub '${SourceBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+
+  #
+  # IAM Roles
+  #
+  ConfigValidatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AcceleratorPrefix}-ConfigValidator-Role'
+      PermissionsBoundary: !If
+        - UsePermissionBoundary
+        - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${PermissionBoundaryPolicyName}'
+        - !Ref 'AWS::NoValue'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ConfigValidatorPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadPrValidationBucket
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub '${ValidationBucket.Arn}/*'
+              - Sid: ReadSourceBucket
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:ListBucket
+                Resource:
+                  - !Sub '${SourceBucket.Arn}'
+                  - !Sub '${SourceBucket.Arn}/*'
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+              - Sid: AssumeSynthRole
+                Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${AcceleratorPrefix}-ConfigValidator-Synth-Role'
+      Tags:
+        - Key: Accelerator
+          Value: !Ref AcceleratorPrefix
+
+  # Synth role - elevated read-only access used only during validate-config and cdk synth.
+  # Trust is restricted to accelerator-prefixed principals in this account (LZA prefixed-ARN idiom),
+  # optionally further restricted by aws:PrincipalOrgID when OrganizationId is provided.
+  ConfigValidatorSynthRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AcceleratorPrefix}-ConfigValidator-Synth-Role'
+      PermissionsBoundary: !If
+        - UsePermissionBoundary
+        - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${PermissionBoundaryPolicyName}'
+        - !Ref 'AWS::NoValue'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${AcceleratorPrefix}-ConfigValidator-Role'
+            Action: sts:AssumeRole
+            Condition: !If
+              - UseOrgId
+              - StringEquals:
+                  'aws:PrincipalOrgID': !Ref OrganizationId
+                ArnLike:
+                  'aws:PrincipalArn': !Sub 'arn:${AWS::Partition}:iam::*:role/${AcceleratorPrefix}-*'
+              - ArnLike:
+                  'aws:PrincipalArn': !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${AcceleratorPrefix}-*'
+      Policies:
+        - PolicyName: ConfigValidatorSynthPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: OrganizationsReadOnly
+                Effect: Allow
+                Action:
+                  - organizations:ListAccounts
+                  - organizations:DescribeOrganization
+                  - organizations:DescribeAccount
+                  - organizations:ListRoots
+                  - organizations:ListOrganizationalUnitsForParent
+                  - organizations:ListChildren
+                  - organizations:ListAccountsForParent
+                Resource: '*'
+              - Sid: DynamoDBConfigTable
+                Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:GetItem
+                  - dynamodb:DescribeTable
+                Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AcceleratorPrefix}-*'
+              - Sid: SSMParameterRead
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter${AcceleratorSsmPrefix}/*'
+                  - !Sub 'arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/cdk-bootstrap/*'
+              - Sid: KMSDecrypt
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey
+                Resource: !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+              - Sid: STSIdentity
+                Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
+                Resource: '*'
+              - Sid: EC2DescribeRegions
+                Effect: Allow
+                Action:
+                  - ec2:DescribeRegions
+                  - ec2:DescribeAvailabilityZones
+                Resource: '*'
+              - Sid: CrossAccountAccess
+                Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::*:role/${ManagementAccountAccessRole}'
+      Tags:
+        - Key: Accelerator
+          Value: !Ref AcceleratorPrefix
+
+  SourceBuilderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AcceleratorPrefix}-ConfigValidator-SourceBuilder-Role'
+      PermissionsBoundary: !If
+        - UsePermissionBoundary
+        - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${PermissionBoundaryPolicyName}'
+        - !Ref 'AWS::NoValue'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SourceBuilderPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: S3WriteSource
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub '${SourceBucket.Arn}'
+                  - !Sub '${SourceBucket.Arn}/*'
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AcceleratorPrefix}-ConfigValidatorSourceBuilder:*'
+      Tags:
+        - Key: Accelerator
+          Value: !Ref AcceleratorPrefix
+
+  #
+  # CodeBuild Projects
+  #
+  ConfigValidatorProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${AcceleratorPrefix}-ConfigValidator'
+      Description: 'Validates LZA PR configs using yamllint, validate-config, and concurrent cdk synth'
+      ServiceRole: !GetAtt ConfigValidatorRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Cache:
+        Type: LOCAL
+        Modes:
+          - LOCAL_SOURCE_CACHE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: !Ref ValidationComputeType
+        Image: aws/codebuild/standard:7.0
+        EnvironmentVariables:
+          - Name: ACCELERATOR_PREFIX
+            Value: !Ref AcceleratorPrefix
+          - Name: ACCELERATOR_SSM_PARAM_NAME_PREFIX
+            Value: !Ref AcceleratorSsmPrefix
+          - Name: ACCELERATOR_VERSION
+            Value: !Ref LzaVersion
+          - Name: ACCELERATOR_SOURCE_BUCKET
+            Value: !Ref SourceBucket
+          - Name: ACCELERATOR_SYNTH_ROLE_ARN
+            Value: !GetAtt ConfigValidatorSynthRole.Arn
+          - Name: ACCELERATOR_PIPELINE_VERSION
+            Type: PARAMETER_STORE
+            Value: !Sub '${AcceleratorSsmPrefix}/config-validator/version'
+          - Name: PARTITION
+            Value: !Ref 'AWS::Partition'
+          - Name: NODE_OPTIONS
+            Value: '--max_old_space_size=4096 --no-warnings'
+      Source:
+        Type: S3
+        Location: !Sub '${ValidationBucket}/default.zip'
+        BuildSpec: buildspec.yml
+      TimeoutInMinutes: 20
+      Tags:
+        - Key: Accelerator
+          Value: !Ref AcceleratorPrefix
+
+  ConfigValidatorSourceBuilderProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${AcceleratorPrefix}-ConfigValidatorSourceBuilder'
+      Description: 'Builds pre-compiled LZA source tar and uploads to S3. Run manually when LZA version changes.'
+      ServiceRole: !GetAtt SourceBuilderRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: !Ref SourceBuilderComputeType
+        Image: aws/codebuild/standard:7.0
+        EnvironmentVariables:
+          - Name: ACCELERATOR_VERSION
+            Value: !Ref LzaVersion
+          - Name: ACCELERATOR_SOURCE_BUCKET
+            Value: !Ref SourceBucket
+          - Name: NODE_OPTIONS
+            Value: '--max_old_space_size=8192 --no-warnings'
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              runtime-versions:
+                nodejs: 22
+              commands:
+                - npm install --global yarn
+            build:
+              commands:
+                - echo "Downloading LZA ${ACCELERATOR_VERSION} source from S3..."
+                - mkdir -p /tmp/lza-source
+                - aws s3 cp s3://${ACCELERATOR_SOURCE_BUCKET}/lza-${ACCELERATOR_VERSION}-src.tar.gz - | tar -xz -C /tmp/lza-source
+                - cd /tmp/lza-source/source
+                - echo "Installing dependencies..."
+                - yarn install --frozen-lockfile
+                - echo "Building all packages..."
+                - yarn build
+                - echo "Creating prebuilt tar..."
+                - cd /tmp/lza-source
+                - tar -czf /tmp/lza-${ACCELERATOR_VERSION}.tar.gz --exclude=.git .
+                - ls -lh /tmp/lza-${ACCELERATOR_VERSION}.tar.gz
+                - echo "Uploading to s3://${ACCELERATOR_SOURCE_BUCKET}/lza-${ACCELERATOR_VERSION}.tar.gz"
+                - aws s3 cp /tmp/lza-${ACCELERATOR_VERSION}.tar.gz s3://${ACCELERATOR_SOURCE_BUCKET}/lza-${ACCELERATOR_VERSION}.tar.gz
+                - echo "Done! Pre-built LZA ${ACCELERATOR_VERSION} uploaded."
+      TimeoutInMinutes: 30
+      Tags:
+        - Key: Accelerator
+          Value: !Ref AcceleratorPrefix
+
+  #
+  # GitHub Actions identity + credentials
+  #
+  GitHubActionsUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub '${AcceleratorPrefix}-ConfigValidator-GitHubActions-User'
+      PermissionsBoundary: !If
+        - UsePermissionBoundary
+        - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${PermissionBoundaryPolicyName}'
+        - !Ref 'AWS::NoValue'
+      Policies:
+        - PolicyName: S3UploadAndCodeBuildInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub '${ValidationBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                  - logs:GetLogEvents
+                Resource:
+                  - !GetAtt ConfigValidatorProject.Arn
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AcceleratorPrefix}-ConfigValidator:*'
+      Tags:
+        - Key: Accelerator
+          Value: !Ref AcceleratorPrefix
+
+  GitHubActionsAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref GitHubActionsUser
+
+  GitHubActionsCredentialsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${AcceleratorPrefix}-ConfigValidator-GitHubActions'
+      Description: 'GitHub Actions credentials for the LZA Config Validator. Consume to set repository secrets.'
+      SecretString: !Sub '{"AWS_ACCESS_KEY_ID":"${GitHubActionsAccessKey}","AWS_SECRET_ACCESS_KEY":"${GitHubActionsAccessKey.SecretAccessKey}"}'
+      Tags:
+        - Key: Accelerator
+          Value: !Ref AcceleratorPrefix
+
+  #
+  # SSM Parameters - advertise the validator like every LZA stack does
+  #
+  SsmParamVersion:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '${AcceleratorSsmPrefix}/config-validator/version'
+      Type: String
+      Value: !Ref LzaVersion
+      Description: 'LZA version this config validator targets'
+
+  SsmParamValidationProject:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '${AcceleratorSsmPrefix}/config-validator/validation-project'
+      Type: String
+      Value: !Ref ConfigValidatorProject
+
+  SsmParamSourceBucket:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '${AcceleratorSsmPrefix}/config-validator/source-bucket'
+      Type: String
+      Value: !Ref SourceBucket
+
+Outputs:
+  ValidationS3BucketName:
+    Description: 'S3 bucket that receives PR config zips'
+    Value: !Ref ValidationBucket
+  SourceS3BucketName:
+    Description: 'S3 bucket holding LZA source bundles'
+    Value: !Ref SourceBucket
+  ConfigValidatorProjectName:
+    Description: 'Validation CodeBuild project name'
+    Value: !Ref ConfigValidatorProject
+  SourceBuilderProjectName:
+    Description: 'Source builder CodeBuild project name'
+    Value: !Ref ConfigValidatorSourceBuilderProject
+  CredentialsSecretArn:
+    Description: 'Secrets Manager secret ARN holding the GitHub Actions credentials (JSON: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)'
+    Value: !Ref GitHubActionsCredentialsSecret
+  CredentialsSecretName:
+    Description: 'Secrets Manager secret name'
+    Value: !Sub '${AcceleratorPrefix}-ConfigValidator-GitHubActions'
+  RetrieveCredentialsCommand:
+    Description: 'CLI command to retrieve the GitHub Actions credentials'
+    Value: !Sub 'aws secretsmanager get-secret-value --secret-id ${AcceleratorPrefix}-ConfigValidator-GitHubActions --query SecretString --output text'

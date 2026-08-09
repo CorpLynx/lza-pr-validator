@@ -1,9 +1,9 @@
 version: 0.2
 
-env:
-  variables:
-    LZA_VERSION: "v1.16.0"
-    NODE_OPTIONS: "--max-old-space-size=4096"
+# LZA Config Validator buildspec.
+# Thin by design - all validation logic lives in scripts/validate-config-pr.sh,
+# mirroring how LZA factors pipeline logic into scripts/prepare-stage.sh.
+# ACCELERATOR_* environment variables are injected by the CodeBuild project.
 
 phases:
   install:
@@ -11,13 +11,12 @@ phases:
       nodejs: 22
       python: 3.11
     commands:
-      - echo "Checking system dependencies..."
       - command -v yamllint >/dev/null 2>&1 || pip install --quiet yamllint
-      - command -v cdk >/dev/null 2>&1 || npm install --global yarn aws-cdk
-      - chmod +x ./validate-lza.sh
+      - command -v yarn >/dev/null 2>&1 || npm install --global yarn
+      - chmod +x ./scripts/validate-config-pr.sh
   build:
     commands:
-      - ./validate-lza.sh $CODEBUILD_SRC_DIR
+      - ./scripts/validate-config-pr.sh "$CODEBUILD_SRC_DIR"
 
 cache:
   paths:
