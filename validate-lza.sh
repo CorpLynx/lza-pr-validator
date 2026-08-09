@@ -28,6 +28,16 @@ print_time
 echo "=========================================================="
 echo "LAYER 2: LZA Schema & Cross-Reference Validation"
 echo "=========================================================="
+
+# Assume the LZA Validator Synth Role for AWS API access (validate-config and CDK synth)
+if [ -n "${LZA_SYNTH_ROLE_ARN}" ]; then
+  echo "Assuming synth role: ${LZA_SYNTH_ROLE_ARN}"
+  CREDS=$(aws sts assume-role --role-arn "${LZA_SYNTH_ROLE_ARN}" --role-session-name lza-validator-synth --output json)
+  export AWS_ACCESS_KEY_ID=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['AccessKeyId'])")
+  export AWS_SECRET_ACCESS_KEY=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['SecretAccessKey'])")
+  export AWS_SESSION_TOKEN=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['SessionToken'])")
+fi
+
 mkdir -p "${WORK_DIR}"
 
 if [ -d "${WORK_DIR}/lza-source/source/package.json" ] || [ -d "${WORK_DIR}/lza-source/source" ]; then
@@ -57,15 +67,6 @@ print_time
 echo "=========================================================="
 echo "LAYER 3: Concurrent Dry-Run CDK Synthesis"
 echo "=========================================================="
-
-# Assume the LZA Validator Synth Role for CDK operations
-if [ -n "${LZA_SYNTH_ROLE_ARN}" ]; then
-  echo "Assuming synth role: ${LZA_SYNTH_ROLE_ARN}"
-  CREDS=$(aws sts assume-role --role-arn "${LZA_SYNTH_ROLE_ARN}" --role-session-name lza-validator-synth --output json)
-  export AWS_ACCESS_KEY_ID=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['AccessKeyId'])")
-  export AWS_SECRET_ACCESS_KEY=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['SecretAccessKey'])")
-  export AWS_SESSION_TOKEN=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['SessionToken'])")
-fi
 
 cd "${WORK_DIR}/lza-source/source/packages/@aws-accelerator/accelerator"
 
