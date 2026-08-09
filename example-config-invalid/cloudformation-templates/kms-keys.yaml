@@ -1,0 +1,77 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Application-specific KMS keys deployed via LZA customizations
+
+Resources:
+  ApplicationDataKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS key for application data encryption
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableRootAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowServiceUse
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+
+  ApplicationDataKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/application-data-key
+      TargetKeyId: !Ref ApplicationDataKey
+
+  SecretsManagerKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS key for Secrets Manager encryption
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableRootAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowSecretsManagerUse
+            Effect: Allow
+            Principal:
+              Service: secretsmanager.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+
+  SecretsManagerKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/secrets-manager-key
+      TargetKeyId: !Ref SecretsManagerKey
+
+Outputs:
+  ApplicationDataKeyArn:
+    Value: !GetAtt ApplicationDataKey.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ApplicationDataKeyArn'
+  SecretsManagerKeyArn:
+    Value: !GetAtt SecretsManagerKey.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-SecretsManagerKeyArn'

@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Cross-account IAM roles for CI/CD pipelines deployed via LZA customizations
+
+Resources:
+  CICDDeploymentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CICD-Deployment-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: 'arn:aws:iam::333333333333:root'
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: corplynx-cicd-external-id
+      MaxSessionDuration: 3600
+      Policies:
+        - PolicyName: DeploymentPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudformation:*
+                  - s3:*
+                  - lambda:*
+                  - apigateway:*
+                  - iam:PassRole
+                Resource: '*'
+              - Effect: Deny
+                Action:
+                  - iam:CreateUser
+                  - iam:DeleteUser
+                  - iam:CreateAccessKey
+                Resource: '*'
+
+  ReadOnlyAuditRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ReadOnly-Audit-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: 'arn:aws:iam::222222222222:root'
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+        - arn:aws:iam::aws:policy/SecurityAudit
+
+  ApplicationRunnerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: Application-Runner-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+                - lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: ApplicationPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/App-*'
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !Sub 'arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:App-*'
+
+Outputs:
+  CICDDeploymentRoleArn:
+    Value: !GetAtt CICDDeploymentRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-CICDDeploymentRoleArn'
+  ReadOnlyAuditRoleArn:
+    Value: !GetAtt ReadOnlyAuditRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ReadOnlyAuditRoleArn'
+  ApplicationRunnerRoleArn:
+    Value: !GetAtt ApplicationRunnerRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ApplicationRunnerRoleArn'

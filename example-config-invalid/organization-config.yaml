@@ -1,0 +1,51 @@
+enable: true
+
+organizationalUnits:
+  - name: Security
+  - name: Infrastructure
+
+quarantineNewAccounts:
+  enable: true
+  scpPolicyName: Quarantine
+
+serviceControlPolicies:
+  - name: DenyLeaveOrganization
+    description: >
+      Prevents accounts from leaving the AWS Organization
+    policy: service-control-policies/deny-leave-organization.json
+    type: customerManaged
+    deploymentTargets:
+      organizationalUnits:
+        - Root
+  - name: DenyRootUser
+    description: >
+      Denies root user access for all actions except billing
+    policy: service-control-policies/deny-root-user.json
+    type: customerManaged
+    deploymentTargets:
+      organizationalUnits:
+        - Security
+        - Infrastructure
+        # INTENTIONAL ERROR: NonExistentOU is not defined in organizationalUnits above.
+        # LZA's validate-config (Layer 2) rejects this invalid OU cross-reference.
+        - NonExistentOU
+  - name: Quarantine
+    description: >
+      Restrictive SCP applied to new accounts before accelerator runs
+    policy: service-control-policies/quarantine.json
+    type: customerManaged
+    deploymentTargets:
+      organizationalUnits: []
+
+resourceControlPolicies:
+  - name: EnforceS3Encryption
+    description: >
+      Enforces S3 encryption on all buckets via resource control policy
+    policy: resource-control-policies/enforce-s3-encryption.json
+    type: customerManaged
+    deploymentTargets:
+      organizationalUnits:
+        - Infrastructure
+
+taggingPolicies: []
+backupPolicies: []
