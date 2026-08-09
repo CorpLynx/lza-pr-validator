@@ -40,8 +40,10 @@ fi
 
 mkdir -p "${WORK_DIR}"
 
-if [ -d "${WORK_DIR}/lza-source/source/package.json" ] || [ -d "${WORK_DIR}/lza-source/source" ]; then
-  echo "Using cached LZA source (${LZA_VERSION})..."
+if [ -f "${WORK_DIR}/lza-source/source/package.json" ]; then
+  echo "LZA source exists, running clean install (${LZA_VERSION})..."
+  cd "${WORK_DIR}/lza-source/source"
+  rm -rf node_modules packages/*/node_modules packages/*/*/node_modules
 else
   rm -rf "${WORK_DIR}/lza-source"
   if [ -n "${LZA_SOURCE_BUCKET}" ]; then
