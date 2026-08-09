@@ -49,14 +49,29 @@
 #     --include-org-policies    Detach + delete LZA SCPs/RCPs from the org
 #     --include-security-services  Disable GuardDuty/SecurityHub/Macie org config
 #     --kms-window DAYS         KMS deletion window 7-30 (default: 7)
+#     --verbose | -v            Print the underlying AWS error when a delete fails
+#     --skip-verify             Skip the post-teardown verification re-scan
 #     -h | --help               Show this help
 #
+# After an --execute run the script re-scans every account/region and reports
+# any AWSAccelerator resources that survived (e.g. Object Lock buckets), so a
+# reported "complete" is backed by verification rather than attempt counts.
+#
 set -uo pipefail
+
+# Relies on bash features (arrays, ${var:off:len}); a non-bash shell (e.g. zsh)
+# mangles these (word-splitting, the ':r' modifier), so require bash.
+if [ -z "${BASH_VERSION:-}" ]; then
+  echo "lza-uninstall.sh must be run with bash, e.g. 'bash scripts/lza-uninstall.sh'." >&2
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Defaults / arg parsing
 # ---------------------------------------------------------------------------
 EXECUTE=false
+VERBOSE=false
+VERIFY=true
 REGIONS="us-east-1 us-west-2"
 MGMT_ROLE="AWSControlTowerExecution"
 PREFIX="AWSAccelerator"
@@ -104,6 +119,8 @@ while [ $# -gt 0 ]; do
     --include-org-policies) INCLUDE_ORG_POLICIES=true ;;
     --include-security-services) INCLUDE_SECURITY_SERVICES=true ;;
     --kms-window) KMS_WINDOW="$2"; shift ;;
+    --verbose|-v) VERBOSE=true ;;
+    --skip-verify) VERIFY=false ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
@@ -174,6 +191,7 @@ row()  { printf "%s%-19s%s %s\n" "$c_dim" "$1" "$c_rst" "$(fit "$2" "$(avail_for
 # Homebrew-style Warning:/Error: lines.
 warn() { printf "%sWarning:%s %s\n" "$c_yel" "$c_rst" "$*"; }
 err()  { printf "%sError:%s %s\n"   "$c_red" "$c_rst" "$*" >&2; }
+ok()   { printf "%s%s%s\n"          "$c_grn" "$*" "$c_rst"; }
 # A preserved/skipped resource.
 preserved() {
   printf "%sSkipping %s (preserved)%s\n" "$c_dim" "$(fit "$1" "$(avail_for 21)")" "$c_rst"
@@ -187,27 +205,61 @@ fmt_elapsed() {
   if [ "$m" -gt 0 ]; then printf "%dm%ds" "$m" "$s"; else printf "%ds" "$s"; fi
 }
 
+# True if an AWS error message indicates the resource is already absent, so a
+# re-run reports "already gone" instead of a misleading "failed".
+is_absent_error() {
+  case "$1" in
+    *NoSuchEntity*|*NoSuchBucket*|*NoSuchKey*|*NotFound*|*"does not exist"*|*"not found"*|*"(404)"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Print an AWS error (trimmed to one line, fit to the window) when --verbose.
+show_error() {
+  [ "$VERBOSE" = true ] || return 0
+  local msg
+  msg=$(printf '%s' "$1" | tr '\n' ' ' | sed 's/  */ /g')
+  [ -n "$msg" ] && printf "  %s%s%s\n" "$c_dim" "$(fit "$msg" "$(avail_for 4)")" "$c_rst"
+}
+
+# Filter a newline-separated list on stdin, dropping preserved validator names.
+drop_validator() {
+  local name
+  while IFS= read -r name; do
+    [ -z "$name" ] && continue
+    is_validator "$name" && continue
+    printf '%s\n' "$name"
+  done
+}
+
 # ---------------------------------------------------------------------------
 # Action runner (quick, fire-and-forget deletions)
 #   run_del "<noun>" "<command...>"
 #     dry-run : "Would remove <noun>"
-#     execute : "Removing <noun>... ok|failed"  (returns command status)
+#     execute : "Removing <noun>... ok | already gone | failed" (+error if -v)
 # ---------------------------------------------------------------------------
 run_del() {
   local noun="$1"; shift
-  if [ "$EXECUTE" = true ]; then
-    printf "Removing %s... " "$(fit "$noun" "$(avail_for 29)")"
-    # Commands are pre-composed strings (single-quoted args); eval runs them.
-    # shellcheck disable=SC2294
-    if eval "$@" >/dev/null 2>&1; then
-      printf "%sok%s\n" "$c_grn" "$c_rst"
-      return 0
-    fi
-    printf "%sfailed%s\n" "$c_red" "$c_rst"
-    return 1
+  if [ "$EXECUTE" != true ]; then
+    printf "Would remove %s\n" "$(fit "$noun" "$(avail_for 13)")"
+    return 0
   fi
-  printf "Would remove %s\n" "$(fit "$noun" "$(avail_for 13)")"
-  return 0
+  printf "Removing %s... " "$(fit "$noun" "$(avail_for 29)")"
+  local out rc
+  # Commands are pre-composed strings (single-quoted args); eval runs them.
+  # shellcheck disable=SC2294
+  out=$(eval "$@" 2>&1); rc=$?
+  if [ "$rc" -eq 0 ]; then
+    printf "%sok%s\n" "$c_grn" "$c_rst"
+    return 0
+  fi
+  if is_absent_error "$out"; then
+    printf "%salready gone%s\n" "$c_dim" "$c_rst"
+    return 0
+  fi
+  printf "%sfailed%s\n" "$c_red" "$c_rst"
+  show_error "$out"
+  return 1
 }
 # Like run_del but for non-deletion setup actions (create/attach/detach).
 run_act() {
@@ -477,7 +529,7 @@ empty_bucket() {
 
 # Empty (all versions + delete markers) and delete aws-accelerator-* buckets.
 teardown_buckets() {
-  local buckets b disp
+  local buckets b disp derr lock
   buckets=$(aws s3api list-buckets --query "Buckets[?starts_with(Name, '${BUCKET_PREFIX}-')].Name" --output text 2>/dev/null | tr '\t' '\n')
   for b in $buckets; do
     [ -z "$b" ] && continue
@@ -488,12 +540,20 @@ teardown_buckets() {
       # drop any deny bucket-policy first (it may block object/bucket deletion)
       aws s3api delete-bucket-policy --bucket "$b" >/dev/null 2>&1 || true
       empty_bucket "$b"
-      if aws s3api delete-bucket --bucket "$b" >/dev/null 2>&1; then
+      if derr=$(aws s3api delete-bucket --bucket "$b" 2>&1); then
         printf "%sok%s\n" "$c_grn" "$c_rst"
         STAT_BUCKETS=$((STAT_BUCKETS + 1))
       else
         printf "%sfailed%s\n" "$c_red" "$c_rst"
-        warn "could not delete bucket $disp (object lock, retain policy, or remaining objects)"
+        # Distinguish the un-fixable case (Object Lock) from generic failures.
+        lock=$(aws s3api get-object-lock-configuration --bucket "$b" \
+               --query "ObjectLockConfiguration.ObjectLockEnabled" --output text 2>/dev/null || echo "")
+        if [ "$lock" = "Enabled" ]; then
+          warn "bucket $disp has S3 Object Lock; objects cannot be deleted until retention expires"
+        else
+          warn "could not delete bucket $disp"
+          show_error "$derr"
+        fi
         STAT_FAILED=$((STAT_FAILED + 1))
       fi
     else
@@ -551,7 +611,7 @@ teardown_ssm() {
 
 # Delete AWSAccelerator-* and cdk-accel-* IAM roles (global; run once per account).
 teardown_iam_roles() {
-  local roles r arn pol ip disp
+  local roles r arn pol ip disp derr
   roles=$(aws iam list-roles --query "Roles[?starts_with(RoleName, '${PREFIX}-') || starts_with(RoleName, 'cdk-accel-')].RoleName" --output text 2>/dev/null | tr '\t' '\n')
   for r in $roles; do
     [ -z "$r" ] && continue
@@ -571,12 +631,13 @@ teardown_iam_roles() {
       for ip in $(aws iam list-instance-profiles-for-role --role-name "$r" --query "InstanceProfiles[].InstanceProfileName" --output text 2>/dev/null); do
         aws iam remove-role-from-instance-profile --instance-profile-name "$ip" --role-name "$r" >/dev/null 2>&1 || true
       done
-      if aws iam delete-role --role-name "$r" >/dev/null 2>&1; then
+      if derr=$(aws iam delete-role --role-name "$r" 2>&1); then
         printf "%sok%s\n" "$c_grn" "$c_rst"
         STAT_IAM=$((STAT_IAM + 1))
       else
         printf "%sfailed%s\n" "$c_red" "$c_rst"
         warn "could not delete role $disp"
+        show_error "$derr"
         STAT_FAILED=$((STAT_FAILED + 1))
       fi
     else
@@ -685,6 +746,54 @@ teardown_security_services() {
     else
       STAT_FAILED=$((STAT_FAILED + 1))
     fi
+  fi
+}
+
+# ===========================================================================
+# Verification - re-scan after teardown and report anything left behind
+# ===========================================================================
+VERIFY_RESIDUAL=0
+note_residual() {   # $1 = label, $2 = newline-separated names
+  local label="$1" name
+  while IFS= read -r name; do
+    [ -z "$name" ] && continue
+    printf "  %s%-14s%s %s\n" "$c_yel" "$label" "$c_rst" "$(fit "$name" "$(avail_for 18)")"
+    VERIFY_RESIDUAL=$((VERIFY_RESIDUAL + 1))
+  done <<< "$2"
+}
+
+verify_teardown() {
+  local accounts="$1" acct region names
+  step "Verification (re-scanning for anything left behind)"
+  for acct in $accounts; do
+    if ! assume_into "$acct"; then warn "cannot assume into $acct to verify"; continue; fi
+    for region in $REGIONS; do
+      names=$(list_lza_stacks "$region")
+      if aws cloudformation describe-stacks --stack-name "${PREFIX}-CDKToolkit" --region "$region" >/dev/null 2>&1; then
+        names="${names}
+${PREFIX}-CDKToolkit"
+      fi
+      note_residual "stack/$region" "$names"
+      names=$(aws ssm get-parameters-by-path --path "$SSM_PREFIX" --recursive --region "$region" \
+              --query "Parameters[].Name" --output text 2>/dev/null | tr '\t' '\n' | drop_validator)
+      note_residual "ssm/$region" "$names"
+      names=$(aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/${PREFIX}-" --region "$region" \
+              --query "logGroups[].logGroupName" --output text 2>/dev/null | tr '\t' '\n' | drop_validator)
+      note_residual "log/$region" "$names"
+    done
+    names=$(aws s3api list-buckets --query "Buckets[?starts_with(Name, '${BUCKET_PREFIX}-')].Name" \
+            --output text 2>/dev/null | tr '\t' '\n' | drop_validator)
+    note_residual "bucket" "$names"
+    names=$(aws iam list-roles --query "Roles[?starts_with(RoleName, '${PREFIX}-') || starts_with(RoleName, 'cdk-accel-')].RoleName" \
+            --output text 2>/dev/null | tr '\t' '\n' | drop_validator)
+    note_residual "iam-role" "$names"
+    clear_creds
+  done
+  if [ "$VERIFY_RESIDUAL" -eq 0 ]; then
+    ok "Verified clean: no AWSAccelerator resources remain (validator + Control Tower preserved)."
+  else
+    warn "$VERIFY_RESIDUAL AWSAccelerator resource(s) still present (listed above)."
+    warn "Re-run to retry; Object Lock buckets can't be removed until their retention expires."
   fi
 }
 
@@ -808,6 +917,11 @@ main() {
   fi
 
   print_summary
+
+  # Verify the teardown actually removed everything (post-run re-scan).
+  if [ "$EXECUTE" = true ] && [ "$VERIFY" = true ]; then
+    verify_teardown "$accounts"
+  fi
 
   step "LZA uninstall $([ "$EXECUTE" = true ] && echo "complete" || echo "dry-run complete (no changes made)")"
   printf "%sControl Tower, IAM Identity Center, and org accounts were preserved.%s\n" "$c_dim" "$c_rst"
