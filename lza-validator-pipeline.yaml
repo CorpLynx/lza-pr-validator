@@ -163,7 +163,6 @@ Resources:
       Cache:
         Type: LOCAL
         Modes:
-          - LOCAL_CUSTOM_CACHE
           - LOCAL_SOURCE_CACHE
       Environment:
         Type: LINUX_CONTAINER

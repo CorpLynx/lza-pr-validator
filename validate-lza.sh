@@ -41,19 +41,18 @@ fi
 mkdir -p "${WORK_DIR}"
 
 if [ -f "${WORK_DIR}/lza-source/source/package.json" ]; then
-  echo "LZA source exists, running clean install (${LZA_VERSION})..."
-  cd "${WORK_DIR}/lza-source/source"
-  rm -rf node_modules packages/*/node_modules packages/*/*/node_modules
-else
+  echo "Removing stale LZA source to ensure clean build..."
   rm -rf "${WORK_DIR}/lza-source"
-  if [ -n "${LZA_SOURCE_BUCKET}" ]; then
-    echo "Downloading LZA source bundle from s3://${LZA_SOURCE_BUCKET}/lza-${LZA_VERSION}.tar.gz..."
-    mkdir -p "${WORK_DIR}/lza-source"
-    aws s3 cp "s3://${LZA_SOURCE_BUCKET}/lza-${LZA_VERSION}.tar.gz" - | tar -xz -C "${WORK_DIR}/lza-source" --warning=no-unknown-keyword 2>/dev/null
-  else
-    echo "LZA_SOURCE_BUCKET not set, falling back to git clone (${LZA_VERSION})..."
-    git clone --depth 1 --branch "${LZA_VERSION}" https://github.com/awslabs/landing-zone-accelerator-on-aws.git "${WORK_DIR}/lza-source"
-  fi
+fi
+
+rm -rf "${WORK_DIR}/lza-source"
+if [ -n "${LZA_SOURCE_BUCKET}" ]; then
+  echo "Downloading LZA source bundle from s3://${LZA_SOURCE_BUCKET}/lza-${LZA_VERSION}.tar.gz..."
+  mkdir -p "${WORK_DIR}/lza-source"
+  aws s3 cp "s3://${LZA_SOURCE_BUCKET}/lza-${LZA_VERSION}.tar.gz" - | tar -xz -C "${WORK_DIR}/lza-source" --warning=no-unknown-keyword 2>/dev/null
+else
+  echo "LZA_SOURCE_BUCKET not set, falling back to git clone (${LZA_VERSION})..."
+  git clone --depth 1 --branch "${LZA_VERSION}" https://github.com/awslabs/landing-zone-accelerator-on-aws.git "${WORK_DIR}/lza-source"
 fi
 
 cd "${WORK_DIR}/lza-source/source"
