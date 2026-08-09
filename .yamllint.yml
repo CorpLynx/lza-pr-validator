@@ -1,0 +1,14 @@
+extends: default
+
+rules:
+  line-length: disable
+  document-start: disable
+  comments: disable
+  empty-lines: disable
+  trailing-spaces: disable
+  truthy:
+    # GitHub Actions uses `on:` which yamllint reads as a truthy key
+    check-keys: false
+  indentation:
+    spaces: consistent
+    indent-sequences: whatever

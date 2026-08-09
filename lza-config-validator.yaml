@@ -207,6 +207,14 @@ Resources:
   #
   ConfigValidatorRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: >
+              CloudWatch Logs actions are scoped to the /aws/codebuild/* log-group namespace,
+              which requires a trailing wildcard for CodeBuild-managed log streams. All other
+              statements are scoped to specific bucket, parameter, and role ARNs.
     Properties:
       RoleName: !Sub '${AcceleratorPrefix}-ConfigValidator-Role'
       PermissionsBoundary: !If
@@ -271,6 +279,16 @@ Resources:
     # The trust policy names the CodeBuild role by ARN; ensure it exists first so IAM
     # can validate the principal (avoids "Invalid principal in policy").
     DependsOn: ConfigValidatorRole
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: >
+              Organizations, STS GetCallerIdentity, and EC2 DescribeRegions/DescribeAvailabilityZones
+              are account- or global-scoped read-only APIs that do not support resource-level
+              permissions, so a wildcard resource is required. KMS and SSM are scoped to accelerator
+              key/parameter ARN patterns, and cross-account assume is scoped to the
+              ManagementAccountAccessRole name. This mirrors LZA's own read-only synth access.
     Properties:
       RoleName: !Sub '${AcceleratorPrefix}-ConfigValidator-Synth-Role'
       PermissionsBoundary: !If
@@ -355,6 +373,14 @@ Resources:
 
   SourceBuilderRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: >
+              CloudWatch Logs actions are scoped to this project's log-group namespace, which
+              requires a trailing wildcard for CodeBuild-managed log streams. S3 access is scoped
+              to the source bucket ARN.
     Properties:
       RoleName: !Sub '${AcceleratorPrefix}-ConfigValidator-SourceBuilder-Role'
       PermissionsBoundary: !If
@@ -495,6 +521,14 @@ Resources:
   #
   GitHubActionsUser:
     Type: AWS::IAM::User
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: >
+              S3 PutObject is scoped to the PR validation bucket ARN; CodeBuild and Logs actions
+              are scoped to the validation project and its log group. The CloudWatch Logs
+              GetLogEvents resource requires a trailing wildcard for the project's log streams.
     Properties:
       UserName: !Sub '${AcceleratorPrefix}-ConfigValidator-GitHubActions-User'
       PermissionsBoundary: !If
