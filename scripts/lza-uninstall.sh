@@ -100,6 +100,10 @@ err()  { echo "${c_red}[x]${c_rst} $*" >&2; }
 # Run a mutating command, or print it in dry-run mode.
 do_cmd() {
   if [ "$EXECUTE" = true ]; then
+    # Commands are pre-composed strings that embed redirections and `||`
+    # fallbacks (e.g. role-arn delete with a plain-delete fallback), so eval
+    # is required here; array execution would treat the operators as literals.
+    # shellcheck disable=SC2294
     eval "$@"
   else
     echo "    ${c_yel}[DRY-RUN]${c_rst} $*"
@@ -226,8 +230,10 @@ teardown_stacks_in_region() {
                     --output text 2>/dev/null | tr '\t' ' ')
           if [ -n "$retain" ]; then
             warn "Stack $s DELETE_FAILED; retrying while retaining: $retain"
+            local retain_ids
+            read -ra retain_ids <<< "$retain"
             aws cloudformation delete-stack --stack-name "$s" --region "$region" \
-              --role-arn "$DELETION_ROLE_ARN" --retain-resources $retain 2>/dev/null || true
+              --role-arn "$DELETION_ROLE_ARN" --retain-resources "${retain_ids[@]}" 2>/dev/null || true
             aws cloudformation wait stack-delete-complete --stack-name "$s" --region "$region" 2>/dev/null
           fi
         fi
