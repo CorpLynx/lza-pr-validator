@@ -26,6 +26,7 @@ serviceControlPolicies:
       organizationalUnits:
         - Security
         - Infrastructure
+        - NonExistentOU
   - name: Quarantine
     description: >
       Restrictive SCP applied to new accounts before accelerator runs
