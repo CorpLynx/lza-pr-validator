@@ -150,7 +150,15 @@ Resources:
                   - ssm:GetParameters
                   - ssm:GetParametersByPath
                   - sts:GetCallerIdentity
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey
                 Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::*:role/AWSControlTowerExecution'
 
   LZAValidationProject:
     Type: AWS::CodeBuild::Project
