@@ -30,7 +30,9 @@
 # SAFETY:
 #   - DRY-RUN by default. Nothing is deleted unless you pass --execute.
 #   - --execute additionally requires typing the confirmation phrase.
-#   - Every destructive action is echoed; in dry-run it is prefixed with "[DRY-RUN]".
+#   - In dry-run each resource is listed as "would remove ..."; in --execute mode
+#     deletions stream live with per-resource progress, a spinner, and timing.
+#   - Set NO_COLOR=1 (or pipe/redirect the output) for plain, undecorated logs.
 #
 # USAGE:
 #   ./scripts/lza-uninstall.sh [options]
@@ -69,6 +71,24 @@ CONFIRM_PHRASE="DELETE LZA"
 VALIDATOR_STACK_MATCH="ConfigValidator"
 VALIDATOR_BUCKET_MATCH="config-validator"
 
+# Runtime globals (initialised for `set -u`).
+PARTITION=""
+MGMT_ACCOUNT_ID=""
+START_TS=0
+
+# Per-category tallies for the closing summary.
+STAT_STACKS=0
+STAT_BUCKETS=0
+STAT_KMS=0
+STAT_SSM=0
+STAT_IAM=0
+STAT_LOGS=0
+STAT_CC=0
+STAT_ORG=0
+STAT_SEC=0
+STAT_PRESERVED=0
+STAT_FAILED=0
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --execute) EXECUTE=true ;;
@@ -89,25 +109,128 @@ while [ $# -gt 0 ]; do
 done
 
 # ---------------------------------------------------------------------------
-# Logging helpers
+# Presentation layer: capability detection (color / unicode / TTY)
 # ---------------------------------------------------------------------------
-c_red=$'\033[31m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_blu=$'\033[34m'; c_rst=$'\033[0m'
-log()  { echo "${c_blu}[*]${c_rst} $*"; }
-ok()   { echo "${c_grn}[+]${c_rst} $*"; }
-warn() { echo "${c_yel}[!]${c_rst} $*"; }
-err()  { echo "${c_red}[x]${c_rst} $*" >&2; }
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+  TTY=1
+  c_red=$'\033[31m';  c_grn=$'\033[32m'; c_yel=$'\033[33m'
+  c_blu=$'\033[34m';  c_mag=$'\033[35m'; c_cyn=$'\033[36m'
+  c_dim=$'\033[2m';   c_bold=$'\033[1m'; c_rst=$'\033[0m'
+else
+  TTY=0
+  c_red=""; c_grn=""; c_yel=""; c_blu=""; c_mag=""; c_cyn=""
+  c_dim=""; c_bold=""; c_rst=""
+fi
 
-# Run a mutating command, or print it in dry-run mode.
-do_cmd() {
-  if [ "$EXECUTE" = true ]; then
-    # Commands are pre-composed strings that embed redirections and `||`
-    # fallbacks (e.g. role-arn delete with a plain-delete fallback), so eval
-    # is required here; array execution would treat the operators as literals.
-    # shellcheck disable=SC2294
-    eval "$@"
+case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+  *UTF-8*|*utf-8*|*UTF8*|*utf8*) UNI=1 ;;
+  *) UNI=0 ;;
+esac
+[ "$TTY" = 1 ] || UNI=0   # keep redirected/CI output as plain ASCII
+
+if [ "$UNI" = 1 ]; then
+  G_OK="✔"; G_NO="✖"; G_ARROW="➜"; G_BULLET="●"; G_KEEP="◦"
+  G_WARN="▲"; G_DRY="○"; G_INFO="›"
+  BOX_H="═"; BAR="━"; DOT="┄"
+  SPIN_FRAMES=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+else
+  G_OK="[ok]"; G_NO="[XX]"; G_ARROW="->"; G_BULLET="*"; G_KEEP="[keep]"
+  G_WARN="[!]"; G_DRY="~"; G_INFO=">"
+  BOX_H="="; BAR="-"; DOT="."
+  SPIN_FRAMES=('|' '/' '-' "\\")
+fi
+
+SPIN_I=0
+spin() {
+  SPIN_I=$(( (SPIN_I + 1) % ${#SPIN_FRAMES[@]} ))
+  printf "%s" "${SPIN_FRAMES[$SPIN_I]}"
+}
+
+ts() { date "+%H:%M:%S"; }
+
+# Build a horizontal rule string of width $1 using char $2 (no trailing newline).
+rule() {
+  local n="${1:-60}" ch="${2:-$BAR}" i=0 s=""
+  while [ "$i" -lt "$n" ]; do s="$s$ch"; i=$((i + 1)); done
+  printf "%s" "$s"
+}
+
+# ---------------------------------------------------------------------------
+# Message helpers
+# ---------------------------------------------------------------------------
+log()  { printf "  %s%s%s %s\n"  "$c_cyn" "$G_BULLET" "$c_rst" "$*"; }
+ok()   { printf "%s%s%s %s\n"    "$c_grn" "$G_OK"     "$c_rst" "$*"; }
+warn() { printf "  %s%s%s %s%s%s\n" "$c_yel" "$G_WARN" "$c_rst" "$c_yel" "$*" "$c_rst"; }
+err()  { printf "%s%s%s %s\n"    "$c_red" "$G_NO"     "$c_rst" "$*" >&2; }
+
+# A category heading inside an account/region (e.g. "CloudFormation stacks").
+category() {
+  printf "\n  %s%s%s %s%s%s\n" "$c_cyn" "$G_BULLET" "$c_rst" "$c_bold" "$1" "$c_rst"
+}
+
+# Region sub-heading.
+region_hdr() {
+  printf "\n  %s%s %s region %s %s%s\n" \
+    "$c_blu" "$DOT$DOT" "$c_bold" "$1" "$c_blu$DOT$DOT" "$c_rst"
+}
+
+# Account banner.
+account_header() {
+  local id="$1" name="$2" label
+  if [ -n "$name" ] && [ "$name" != "None" ]; then
+    label="ACCOUNT  $id   ($name)"
   else
-    echo "    ${c_yel}[DRY-RUN]${c_rst} $*"
+    label="ACCOUNT  $id"
   fi
+  printf "\n%s%s%s\n"   "$c_mag" "$(rule 62 "$BAR")" "$c_rst"
+  printf "  %s%s%s%s\n" "$c_bold" "$c_mag" "$label" "$c_rst"
+  printf "%s%s%s\n"     "$c_mag" "$(rule 62 "$BAR")" "$c_rst"
+}
+
+# A "preserved / skipped" line (validator, etc.).
+preserved() {
+  printf "    %s%s preserved%s %s%s%s\n" "$c_cyn" "$G_KEEP" "$c_rst" "$c_dim" "$1" "$c_rst"
+  STAT_PRESERVED=$((STAT_PRESERVED + 1))
+}
+
+# A dry-run "would remove X" line (for flows not routed through run_del).
+plan_line() {
+  printf "    %s%s%s remove %s\n" "$c_yel" "$G_DRY" "$c_rst" "$1"
+}
+
+# ---------------------------------------------------------------------------
+# Action runners
+#   _run <plan-label> <do-label> <command...>
+#     dry-run : prints "○ <plan-label>"
+#     execute : prints "[ts] ➜ <do-label> ... ✔|✖" and returns the command status
+# ---------------------------------------------------------------------------
+_run() {
+  local plan_label="$1" do_label="$2"; shift 2
+  if [ "$EXECUTE" = true ]; then
+    printf "    %s[%s]%s %s%s%s %s ... " \
+      "$c_dim" "$(ts)" "$c_rst" "$c_yel" "$G_ARROW" "$c_rst" "$do_label"
+    # Commands are pre-composed strings (single-quoted args); eval runs them.
+    # shellcheck disable=SC2294
+    if eval "$@" >/dev/null 2>&1; then
+      printf "%s%s%s\n" "$c_grn" "$G_OK" "$c_rst"
+      return 0
+    fi
+    printf "%s%s%s\n" "$c_red" "$G_NO" "$c_rst"
+    return 1
+  fi
+  printf "    %s%s%s %s\n" "$c_yel" "$G_DRY" "$c_rst" "$plan_label"
+  return 0
+}
+# Deletion helper: run_del "<noun>" "<command>"
+run_del() { local n="$1"; shift; _run "remove $n" "removing $n" "$@"; }
+# Setup/other action helper: run_act "<plan phrase>" "<do phrase>" "<command>"
+run_act() { local p="$1" d="$2"; shift 2; _run "$p" "$d" "$@"; }
+
+# Format seconds as e.g. "2m14s" / "9s".
+fmt_elapsed() {
+  local s="$1" m
+  m=$((s / 60)); s=$((s % 60))
+  if [ "$m" -gt 0 ]; then printf "%dm%ds" "$m" "$s"; else printf "%ds" "$s"; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -115,7 +238,6 @@ do_cmd() {
 # For the management account we use the caller's credentials; for members we
 # assume the management access role. Sets/uses AWS_* env vars per invocation.
 # ---------------------------------------------------------------------------
-MGMT_ACCOUNT_ID=""
 assume_into() {
   # $1 = account id. Exports temp creds unless it's the management account.
   local acct="$1"
@@ -138,6 +260,12 @@ assume_into() {
   return 0
 }
 clear_creds() { unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN; }
+
+# Best-effort friendly account name (uses management-account org read access).
+acct_name() {
+  aws organizations describe-account --account-id "$1" \
+    --query "Account.Name" --output text 2>/dev/null || echo ""
+}
 
 # Should this named resource be preserved because it's the validator tooling?
 is_validator() {
@@ -162,17 +290,20 @@ ensure_deletion_role() {
   if aws iam get-role --role-name "$DELETION_ROLE_NAME" >/dev/null 2>&1; then
     return 0
   fi
-  log "Creating temporary CFN deletion role ${DELETION_ROLE_NAME} in ${acct}"
   local trust='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"cloudformation.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
-  do_cmd "aws iam create-role --role-name '$DELETION_ROLE_NAME' --assume-role-policy-document '$trust' >/dev/null"
-  do_cmd "aws iam attach-role-policy --role-name '$DELETION_ROLE_NAME' --policy-arn arn:${PARTITION}:iam::aws:policy/AdministratorAccess"
-  [ "$EXECUTE" = true ] && sleep 8   # IAM propagation
+  run_act "create temp CFN deletion role ${DELETION_ROLE_NAME}" \
+          "create temp CFN deletion role ${DELETION_ROLE_NAME}" \
+          "aws iam create-role --role-name '$DELETION_ROLE_NAME' --assume-role-policy-document '$trust'"
+  run_act "attach AdministratorAccess to ${DELETION_ROLE_NAME}" \
+          "attach AdministratorAccess to ${DELETION_ROLE_NAME}" \
+          "aws iam attach-role-policy --role-name '$DELETION_ROLE_NAME' --policy-arn arn:${PARTITION}:iam::aws:policy/AdministratorAccess"
+  if [ "$EXECUTE" = true ]; then sleep 8; fi   # IAM propagation
 }
 cleanup_deletion_role() {
   if aws iam get-role --role-name "$DELETION_ROLE_NAME" >/dev/null 2>&1; then
-    log "Removing temporary CFN deletion role ${DELETION_ROLE_NAME}"
-    do_cmd "aws iam detach-role-policy --role-name '$DELETION_ROLE_NAME' --policy-arn arn:${PARTITION}:iam::aws:policy/AdministratorAccess"
-    do_cmd "aws iam delete-role --role-name '$DELETION_ROLE_NAME'"
+    run_act "remove temp CFN deletion role ${DELETION_ROLE_NAME}" \
+            "remove temp CFN deletion role ${DELETION_ROLE_NAME}" \
+            "aws iam detach-role-policy --role-name '$DELETION_ROLE_NAME' --policy-arn arn:${PARTITION}:iam::aws:policy/AdministratorAccess; aws iam delete-role --role-name '$DELETION_ROLE_NAME'"
   fi
 }
 
@@ -191,19 +322,88 @@ list_lza_stacks() {
   done
 }
 
-delete_stack() {
+# Issue (best-effort) deletion of a single stack: disable termination protection,
+# then delete via the fallback deletion role, else a plain delete.
+issue_stack_delete() {
   local region="$1" stack="$2"
-  # Disable termination protection (best-effort)
-  do_cmd "aws cloudformation update-termination-protection --no-enable-termination-protection --stack-name '$stack' --region '$region' >/dev/null 2>&1 || true"
-  # Try a normal delete first; fall back to the deletion role if the stored role is gone.
-  do_cmd "aws cloudformation delete-stack --stack-name '$stack' --region '$region' --role-arn '$DELETION_ROLE_ARN' 2>/dev/null || aws cloudformation delete-stack --stack-name '$stack' --region '$region'"
+  aws cloudformation update-termination-protection --no-enable-termination-protection \
+    --stack-name "$stack" --region "$region" >/dev/null 2>&1 || true
+  aws cloudformation delete-stack --stack-name "$stack" --region "$region" \
+    --role-arn "$DELETION_ROLE_ARN" >/dev/null 2>&1 \
+    || aws cloudformation delete-stack --stack-name "$stack" --region "$region" >/dev/null 2>&1 \
+    || true
+}
+
+# Watch a single stack delete, streaming each resource as it is removed, with a
+# live spinner + elapsed timer on a TTY (plain periodic output otherwise).
+# Returns 0 on DELETE_COMPLETE/GONE, 1 on DELETE_FAILED/timeout.
+watch_stack_deletion() {
+  local region="$1" stack="$2"
+  local start now elapsed status events lid rtype reported t
+  start=$(date +%s)
+  reported=" "
+  printf "    %s%s%s deleting %s%s%s\n" "$c_yel" "$G_ARROW" "$c_rst" "$c_bold" "$stack" "$c_rst"
+  while :; do
+    status=$(aws cloudformation describe-stacks --stack-name "$stack" --region "$region" \
+             --query "Stacks[0].StackStatus" --output text 2>/dev/null || echo "GONE")
+    events=$(aws cloudformation describe-stack-events --stack-name "$stack" --region "$region" \
+             --query "reverse(StackEvents[?ResourceStatus=='DELETE_COMPLETE'].[LogicalResourceId,ResourceType])" \
+             --output text 2>/dev/null || echo "")
+
+    [ "$TTY" = 1 ] && printf "\r\033[K"
+    if [ -n "$events" ] && [ "$events" != "None" ]; then
+      while IFS=$'\t' read -r lid rtype; do
+        [ -z "$lid" ] && continue
+        case "$reported" in
+          *" ${lid}|${rtype} "*) : ;;
+          *)
+            reported="${reported}${lid}|${rtype} "
+            printf "        %s%s%s %s%-38s%s %s%s%s\n" \
+              "$c_grn" "$G_OK" "$c_rst" "$c_dim" "$rtype" "$c_rst" "" "$lid" ""
+            ;;
+        esac
+      done <<< "$events"
+    fi
+
+    now=$(date +%s); elapsed=$((now - start))
+    case "$status" in
+      DELETE_COMPLETE|GONE)
+        printf "      %s%s%s %s%s%s removed %s(%s)%s\n" \
+          "$c_grn" "$G_OK" "$c_rst" "$c_bold" "$stack" "$c_rst" \
+          "$c_dim" "$(fmt_elapsed "$elapsed")" "$c_rst"
+        return 0 ;;
+      DELETE_FAILED)
+        printf "      %s%s%s %s%s%s DELETE_FAILED %s(%s)%s\n" \
+          "$c_red" "$G_NO" "$c_rst" "$c_bold" "$stack" "$c_rst" \
+          "$c_dim" "$(fmt_elapsed "$elapsed")" "$c_rst"
+        return 1 ;;
+    esac
+    if [ "$elapsed" -gt 1800 ]; then
+      warn "Timed out waiting on ${stack} after 30m."
+      return 1
+    fi
+
+    # Idle animation: spin smoothly on a TTY without hammering the API.
+    if [ "$TTY" = 1 ]; then
+      t=0
+      while [ "$t" -lt 10 ]; do
+        now=$(date +%s); elapsed=$((now - start))
+        printf "\r      %s%s%s %sdeleting %s%s %s(%s)%s " \
+          "$c_yel" "$(spin)" "$c_rst" "$c_yel" "$stack" "$c_rst" \
+          "$c_dim" "$(fmt_elapsed "$elapsed")" "$c_rst"
+        sleep 0.3
+        t=$((t + 1))
+      done
+    else
+      sleep 3
+    fi
+  done
 }
 
 # Delete all LZA stacks in a region using a dependency-resolving retry loop.
 teardown_stacks_in_region() {
   local region="$1"
-  local pass line
-  local stacks
+  local pass line stacks s
   for pass in 1 2 3 4 5 6; do
     # Populate the stacks array portably (macOS bash 3.2 has no mapfile).
     stacks=()
@@ -211,35 +411,42 @@ teardown_stacks_in_region() {
       [ -n "$line" ] && stacks+=("$line")
     done < <(list_lza_stacks "$region")
     if [ "${#stacks[@]}" -eq 0 ]; then break; fi
-    log "Region ${region}: pass ${pass} - ${#stacks[@]} ${PREFIX} stack(s) to delete"
-    for s in "${stacks[@]}"; do
-      echo "  - deleting stack: $s"
-      delete_stack "$region" "$s"
-    done
+    printf "    %s%s%s pass %d %s%d stack(s)%s\n" \
+      "$c_dim" "$G_INFO" "$c_rst" "$pass" "$c_dim" "${#stacks[@]}" "$c_rst"
+
     if [ "$EXECUTE" = true ]; then
-      # Wait for this pass's deletions to settle; retry DELETE_FAILED with retain-resources.
+      # Fire all deletions in this pass (they run in parallel), then watch each.
+      for s in "${stacks[@]}"; do issue_stack_delete "$region" "$s"; done
       for s in "${stacks[@]}"; do
-        aws cloudformation wait stack-delete-complete --stack-name "$s" --region "$region" 2>/dev/null
-        local status
-        status=$(aws cloudformation describe-stacks --stack-name "$s" --region "$region" \
-                  --query "Stacks[0].StackStatus" --output text 2>/dev/null || echo "GONE")
-        if [ "$status" = "DELETE_FAILED" ]; then
-          local retain
+        if watch_stack_deletion "$region" "$s"; then
+          STAT_STACKS=$((STAT_STACKS + 1))
+        else
+          # DELETE_FAILED - retry retaining the resources that could not delete.
+          local retain retain_ids
           retain=$(aws cloudformation describe-stack-events --stack-name "$s" --region "$region" \
                     --query "StackEvents[?ResourceStatus=='DELETE_FAILED'].LogicalResourceId" \
                     --output text 2>/dev/null | tr '\t' ' ')
           if [ -n "$retain" ]; then
             warn "Stack $s DELETE_FAILED; retrying while retaining: $retain"
-            local retain_ids
             read -ra retain_ids <<< "$retain"
             aws cloudformation delete-stack --stack-name "$s" --region "$region" \
-              --role-arn "$DELETION_ROLE_ARN" --retain-resources "${retain_ids[@]}" 2>/dev/null || true
-            aws cloudformation wait stack-delete-complete --stack-name "$s" --region "$region" 2>/dev/null
+              --role-arn "$DELETION_ROLE_ARN" --retain-resources "${retain_ids[@]}" >/dev/null 2>&1 || true
+            if watch_stack_deletion "$region" "$s"; then
+              STAT_STACKS=$((STAT_STACKS + 1))
+            else
+              STAT_FAILED=$((STAT_FAILED + 1))
+            fi
+          else
+            STAT_FAILED=$((STAT_FAILED + 1))
           fi
         fi
       done
     else
-      # Dry-run: only one pass is meaningful.
+      # Dry-run: list what would be deleted; one pass is meaningful.
+      for s in "${stacks[@]}"; do
+        plan_line "stack $s"
+        STAT_STACKS=$((STAT_STACKS + 1))
+      done
       break
     fi
   done
@@ -247,64 +454,83 @@ teardown_stacks_in_region() {
   # Finally delete the CDKToolkit bootstrap stack (last - others depend on it).
   local cdktoolkit="${PREFIX}-CDKToolkit"
   if aws cloudformation describe-stacks --stack-name "$cdktoolkit" --region "$region" >/dev/null 2>&1; then
-    echo "  - deleting bootstrap stack: $cdktoolkit"
-    delete_stack "$region" "$cdktoolkit"
-    [ "$EXECUTE" = true ] && aws cloudformation wait stack-delete-complete --stack-name "$cdktoolkit" --region "$region" 2>/dev/null
+    if [ "$EXECUTE" = true ]; then
+      issue_stack_delete "$region" "$cdktoolkit"
+      if watch_stack_deletion "$region" "$cdktoolkit"; then
+        STAT_STACKS=$((STAT_STACKS + 1))
+      else
+        STAT_FAILED=$((STAT_FAILED + 1))
+      fi
+    else
+      plan_line "bootstrap stack $cdktoolkit"
+      STAT_STACKS=$((STAT_STACKS + 1))
+    fi
   fi
 }
 
 # Empty (all versions + delete markers) and delete aws-accelerator-* buckets.
 teardown_buckets() {
-  local buckets
+  local buckets b
   buckets=$(aws s3api list-buckets --query "Buckets[?starts_with(Name, '${BUCKET_PREFIX}-')].Name" --output text 2>/dev/null | tr '\t' '\n')
   for b in $buckets; do
     [ -z "$b" ] && continue
-    if is_validator "$b"; then log "Preserving validator bucket: $b"; continue; fi
-    echo "  - emptying + deleting bucket: $b"
+    if is_validator "$b"; then preserved "bucket $b"; continue; fi
     if [ "$EXECUTE" = true ]; then
+      printf "    %s[%s]%s %s%s%s emptying + removing bucket %s%s%s ... " \
+        "$c_dim" "$(ts)" "$c_rst" "$c_yel" "$G_ARROW" "$c_rst" "$c_bold" "$b" "$c_rst"
       # delete all object versions
-      local vers
+      local vers marks
       vers=$(aws s3api list-object-versions --bucket "$b" --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' --output json 2>/dev/null)
       if [ -n "$vers" ] && [ "$(echo "$vers" | jq -r '.Objects')" != "null" ]; then
         aws s3api delete-objects --bucket "$b" --delete "$vers" >/dev/null 2>&1 || true
       fi
       # delete all delete-markers
-      local marks
       marks=$(aws s3api list-object-versions --bucket "$b" --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' --output json 2>/dev/null)
       if [ -n "$marks" ] && [ "$(echo "$marks" | jq -r '.Objects')" != "null" ]; then
         aws s3api delete-objects --bucket "$b" --delete "$marks" >/dev/null 2>&1 || true
       fi
       aws s3 rm "s3://$b" --recursive >/dev/null 2>&1 || true
-      aws s3api delete-bucket --bucket "$b" 2>/dev/null || warn "Could not delete bucket $b (may have a retain policy or remaining objects)"
+      if aws s3api delete-bucket --bucket "$b" >/dev/null 2>&1; then
+        printf "%s%s%s\n" "$c_grn" "$G_OK" "$c_rst"
+        STAT_BUCKETS=$((STAT_BUCKETS + 1))
+      else
+        printf "%s%s%s\n" "$c_red" "$G_NO" "$c_rst"
+        warn "Could not delete bucket $b (retain policy or remaining objects)."
+        STAT_FAILED=$((STAT_FAILED + 1))
+      fi
     else
-      echo "    ${c_yel}[DRY-RUN]${c_rst} would empty all versions and delete s3://$b"
+      plan_line "bucket $b (empty all versions + delete)"
+      STAT_BUCKETS=$((STAT_BUCKETS + 1))
     fi
   done
 }
 
 # Schedule deletion of alias/accelerator/* customer KMS keys in a region.
 teardown_kms() {
-  local region="$1"
-  local aliases
+  local region="$1" aliases alias keyid state
   aliases=$(aws kms list-aliases --region "$region" \
     --query "Aliases[?starts_with(AliasName, 'alias/${SSM_PREFIX#/}/') || starts_with(AliasName, 'alias/accelerator/')].[AliasName,TargetKeyId]" \
     --output text 2>/dev/null)
-  echo "$aliases" | while read -r alias keyid; do
+  while IFS=$'\t' read -r alias keyid; do
     [ -z "${keyid:-}" ] && continue
     # skip keys with no target or already pending deletion
-    local state
     state=$(aws kms describe-key --key-id "$keyid" --region "$region" --query "KeyMetadata.KeyState" --output text 2>/dev/null || echo "")
     if [ "$state" = "PendingDeletion" ] || [ -z "$state" ]; then continue; fi
-    echo "  - scheduling KMS key deletion: $alias ($keyid) [${KMS_WINDOW}d]"
-    do_cmd "aws kms schedule-key-deletion --key-id '$keyid' --pending-window-in-days '$KMS_WINDOW' --region '$region' >/dev/null 2>&1 || true"
-    do_cmd "aws kms delete-alias --alias-name '$alias' --region '$region' 2>/dev/null || true"
-  done
+    if run_del "KMS key $alias ($keyid) [${KMS_WINDOW}d window]" \
+         "aws kms schedule-key-deletion --key-id '$keyid' --pending-window-in-days '$KMS_WINDOW' --region '$region'"; then
+      STAT_KMS=$((STAT_KMS + 1))
+    else
+      STAT_FAILED=$((STAT_FAILED + 1))
+    fi
+    if [ "$EXECUTE" = true ]; then
+      aws kms delete-alias --alias-name "$alias" --region "$region" >/dev/null 2>&1 || true
+    fi
+  done <<< "$aliases"
 }
 
 # Delete /accelerator/* and /cdk-bootstrap/accel/* SSM parameters in a region.
 teardown_ssm() {
-  local region="$1"
-  local params
+  local region="$1" params p
   params=$(aws ssm get-parameters-by-path --path "$SSM_PREFIX" --recursive --region "$region" \
             --query "Parameters[].Name" --output text 2>/dev/null | tr '\t' '\n')
   # add cdk-bootstrap accel version param
@@ -312,115 +538,212 @@ teardown_ssm() {
 /cdk-bootstrap/accel/version"
   for p in $params; do
     [ -z "$p" ] && continue
-    if is_validator "$p"; then log "Preserving validator SSM param: $p"; continue; fi
-    echo "  - deleting SSM parameter: $p"
-    do_cmd "aws ssm delete-parameter --name '$p' --region '$region' 2>/dev/null || true"
+    if is_validator "$p"; then preserved "SSM param $p"; continue; fi
+    if run_del "SSM parameter $p" \
+         "aws ssm delete-parameter --name '$p' --region '$region'"; then
+      STAT_SSM=$((STAT_SSM + 1))
+    else
+      STAT_FAILED=$((STAT_FAILED + 1))
+    fi
   done
 }
 
 # Delete AWSAccelerator-* and cdk-accel-* IAM roles (global; run once per account).
 teardown_iam_roles() {
-  local roles
+  local roles r arn pol ip
   roles=$(aws iam list-roles --query "Roles[?starts_with(RoleName, '${PREFIX}-') || starts_with(RoleName, 'cdk-accel-')].RoleName" --output text 2>/dev/null | tr '\t' '\n')
   for r in $roles; do
     [ -z "$r" ] && continue
-    if is_validator "$r"; then log "Preserving validator role: $r"; continue; fi
-    echo "  - deleting IAM role: $r"
+    if is_validator "$r"; then preserved "IAM role $r"; continue; fi
     if [ "$EXECUTE" = true ]; then
+      printf "    %s[%s]%s %s%s%s removing IAM role %s%s%s ... " \
+        "$c_dim" "$(ts)" "$c_rst" "$c_yel" "$G_ARROW" "$c_rst" "$c_bold" "$r" "$c_rst"
       # detach managed policies
       for arn in $(aws iam list-attached-role-policies --role-name "$r" --query "AttachedPolicies[].PolicyArn" --output text 2>/dev/null); do
-        aws iam detach-role-policy --role-name "$r" --policy-arn "$arn" 2>/dev/null || true
+        aws iam detach-role-policy --role-name "$r" --policy-arn "$arn" >/dev/null 2>&1 || true
       done
       # delete inline policies
       for pol in $(aws iam list-role-policies --role-name "$r" --query "PolicyNames[]" --output text 2>/dev/null); do
-        aws iam delete-role-policy --role-name "$r" --policy-name "$pol" 2>/dev/null || true
+        aws iam delete-role-policy --role-name "$r" --policy-name "$pol" >/dev/null 2>&1 || true
       done
-      # remove instance profiles
+      # remove from instance profiles
       for ip in $(aws iam list-instance-profiles-for-role --role-name "$r" --query "InstanceProfiles[].InstanceProfileName" --output text 2>/dev/null); do
-        aws iam remove-role-from-instance-profile --instance-profile-name "$ip" --role-name "$r" 2>/dev/null || true
+        aws iam remove-role-from-instance-profile --instance-profile-name "$ip" --role-name "$r" >/dev/null 2>&1 || true
       done
-      aws iam delete-role --role-name "$r" 2>/dev/null || warn "Could not delete role $r"
+      if aws iam delete-role --role-name "$r" >/dev/null 2>&1; then
+        printf "%s%s%s\n" "$c_grn" "$G_OK" "$c_rst"
+        STAT_IAM=$((STAT_IAM + 1))
+      else
+        printf "%s%s%s\n" "$c_red" "$G_NO" "$c_rst"
+        warn "Could not delete role $r"
+        STAT_FAILED=$((STAT_FAILED + 1))
+      fi
     else
-      echo "    ${c_yel}[DRY-RUN]${c_rst} would detach policies and delete role $r"
+      plan_line "IAM role $r (detach policies + delete)"
+      STAT_IAM=$((STAT_IAM + 1))
     fi
   done
 }
 
 # Delete LZA CloudWatch log groups in a region.
 teardown_log_groups() {
-  local region="$1"
+  local region="$1" lp lg
   local prefixes=("/aws/codebuild/${PREFIX}-" "/aws/lambda/${PREFIX}-" "${PREFIX}-Module")
   for lp in "${prefixes[@]}"; do
     for lg in $(aws logs describe-log-groups --log-group-name-prefix "$lp" --region "$region" --query "logGroups[].logGroupName" --output text 2>/dev/null | tr '\t' '\n'); do
       [ -z "$lg" ] && continue
-      if is_validator "$lg"; then continue; fi
-      echo "  - deleting log group: $lg"
-      do_cmd "aws logs delete-log-group --log-group-name '$lg' --region '$region' 2>/dev/null || true"
+      if is_validator "$lg"; then preserved "log group $lg"; continue; fi
+      if run_del "log group $lg" \
+           "aws logs delete-log-group --log-group-name '$lg' --region '$region'"; then
+        STAT_LOGS=$((STAT_LOGS + 1))
+      else
+        STAT_FAILED=$((STAT_FAILED + 1))
+      fi
     done
   done
 }
 
 # Delete the LZA config CodeCommit repo if present (management account).
 teardown_codecommit() {
-  local region="$1"
-  local repo="${BUCKET_PREFIX}-config"
+  local region="$1" repo="${BUCKET_PREFIX}-config"
   if aws codecommit get-repository --repository-name "$repo" --region "$region" >/dev/null 2>&1; then
-    echo "  - deleting CodeCommit repo: $repo"
-    do_cmd "aws codecommit delete-repository --repository-name '$repo' --region '$region' >/dev/null 2>&1 || true"
+    if run_del "CodeCommit repo $repo" \
+         "aws codecommit delete-repository --repository-name '$repo' --region '$region'"; then
+      STAT_CC=$((STAT_CC + 1))
+    else
+      STAT_FAILED=$((STAT_FAILED + 1))
+    fi
   fi
 }
 
 # OPTIONAL: detach + delete LZA-created SCPs/RCPs (management account, org level).
 teardown_org_policies() {
-  log "Org policy teardown (SCPs/RCPs)"
+  local ptype pols pid pname tgt
   for ptype in SERVICE_CONTROL_POLICY RESOURCE_CONTROL_POLICY; do
-    local pols
+    category "Org policies: $ptype"
     pols=$(aws organizations list-policies --filter "$ptype" \
             --query "Policies[?!contains(['FullAWSAccess'], Name)].[Id,Name]" --output text 2>/dev/null)
-    echo "$pols" | while read -r pid pname; do
+    while IFS=$'\t' read -r pid pname; do
       [ -z "${pid:-}" ] && continue
       # Only remove customer-managed LZA policies (skip AWS-managed FullAWSAccess).
       [ "$pname" = "FullAWSAccess" ] && continue
-      echo "  - $ptype $pname ($pid): detaching from all targets, then deleting"
       if [ "$EXECUTE" = true ]; then
+        printf "    %s[%s]%s %s%s%s removing %s %s%s%s ... " \
+          "$c_dim" "$(ts)" "$c_rst" "$c_yel" "$G_ARROW" "$c_rst" "$ptype" "$c_bold" "$pname" "$c_rst"
         for tgt in $(aws organizations list-targets-for-policy --policy-id "$pid" --query "Targets[].TargetId" --output text 2>/dev/null); do
-          aws organizations detach-policy --policy-id "$pid" --target-id "$tgt" 2>/dev/null || true
+          aws organizations detach-policy --policy-id "$pid" --target-id "$tgt" >/dev/null 2>&1 || true
         done
-        aws organizations delete-policy --policy-id "$pid" 2>/dev/null || warn "Could not delete policy $pid"
+        if aws organizations delete-policy --policy-id "$pid" >/dev/null 2>&1; then
+          printf "%s%s%s\n" "$c_grn" "$G_OK" "$c_rst"
+          STAT_ORG=$((STAT_ORG + 1))
+        else
+          printf "%s%s%s\n" "$c_red" "$G_NO" "$c_rst"
+          warn "Could not delete policy $pid"
+          STAT_FAILED=$((STAT_FAILED + 1))
+        fi
       else
-        echo "    ${c_yel}[DRY-RUN]${c_rst} would detach + delete $ptype $pname"
+        plan_line "$ptype $pname ($pid) - detach from all targets + delete"
+        STAT_ORG=$((STAT_ORG + 1))
       fi
-    done
+    done <<< "$pols"
   done
-  warn "Note: this removes ALL customer-managed SCPs/RCPs. If some are not LZA's, narrow the filter."
+  warn "This removes ALL customer-managed SCPs/RCPs. If some are not LZA's, narrow the filter."
 }
 
 # OPTIONAL: disable GuardDuty / SecurityHub / Macie org config in a region.
 teardown_security_services() {
-  local region="$1"
-  warn "Security-service teardown in ${region} (GuardDuty/SecurityHub/Macie)."
-  warn "Control Tower may re-enable some of these; review CT controls afterward."
+  local region="$1" det macie_status
+  warn "Security-service teardown in ${region}; Control Tower may re-enable some. Review CT controls afterward."
 
   # GuardDuty: delete detectors in this account/region.
   for det in $(aws guardduty list-detectors --region "$region" --query "DetectorIds[]" --output text 2>/dev/null | tr '\t' '\n'); do
     [ -z "$det" ] && continue
-    echo "  - GuardDuty: deleting detector $det"
-    do_cmd "aws guardduty delete-detector --detector-id '$det' --region '$region' 2>/dev/null || true"
+    if run_del "GuardDuty detector $det" \
+         "aws guardduty delete-detector --detector-id '$det' --region '$region'"; then
+      STAT_SEC=$((STAT_SEC + 1))
+    else
+      STAT_FAILED=$((STAT_FAILED + 1))
+    fi
   done
 
   # SecurityHub: disable in this account/region.
   if aws securityhub get-enabled-standards --region "$region" >/dev/null 2>&1; then
-    echo "  - SecurityHub: disabling"
-    do_cmd "aws securityhub disable-security-hub --region '$region' 2>/dev/null || true"
+    if run_del "SecurityHub (this account/region)" \
+         "aws securityhub disable-security-hub --region '$region'"; then
+      STAT_SEC=$((STAT_SEC + 1))
+    else
+      STAT_FAILED=$((STAT_FAILED + 1))
+    fi
   fi
 
   # Macie: disable in this account/region.
-  local macie_status
   macie_status=$(aws macie2 get-macie-session --region "$region" --query "status" --output text 2>/dev/null || echo "")
   if [ -n "$macie_status" ] && [ "$macie_status" != "None" ]; then
-    echo "  - Macie: disabling"
-    do_cmd "aws macie2 disable-macie --region '$region' 2>/dev/null || true"
+    if run_del "Macie (this account/region)" \
+         "aws macie2 disable-macie --region '$region'"; then
+      STAT_SEC=$((STAT_SEC + 1))
+    else
+      STAT_FAILED=$((STAT_FAILED + 1))
+    fi
   fi
+}
+
+# ===========================================================================
+# Banner + summary
+# ===========================================================================
+print_banner() {
+  local accounts="$1" mode_txt
+  if [ "$EXECUTE" = true ]; then
+    mode_txt="${c_red}${c_bold}EXECUTE (destructive)${c_rst}"
+  else
+    mode_txt="${c_grn}${c_bold}DRY-RUN${c_rst}"
+  fi
+  printf "\n%s%s%s\n" "$c_cyn" "$(rule 62 "$BOX_H")" "$c_rst"
+  printf "  %s%sLANDING ZONE ACCELERATOR  %s  UNINSTALLER%s\n" "$c_bold" "$c_cyn" "$G_BULLET" "$c_rst"
+  printf "%s%s%s\n" "$c_cyn" "$(rule 62 "$BOX_H")" "$c_rst"
+  printf "  %-18s %s\n" "Mode"               "$mode_txt"
+  printf "  %-18s %s   %spartition %s%s\n" "Management acct"    "$MGMT_ACCOUNT_ID" "$c_dim" "$PARTITION" "$c_rst"
+  printf "  %-18s %s\n" "Regions"            "$REGIONS"
+  printf "  %-18s %s\n" "Accounts"           "$accounts"
+  printf "  %-18s %s\n" "Cross-acct role"    "$MGMT_ROLE"
+  printf "  %-18s %s / %s / %s\n" "Prefixes" "$PREFIX" "$BUCKET_PREFIX" "$SSM_PREFIX"
+  printf "  %-18s %s\n" "Keep validator"     "$([ "$INCLUDE_VALIDATOR" = true ] && echo no || echo yes)"
+  printf "  %-18s org-policies=%s  security-services=%s\n" "Optional" "$INCLUDE_ORG_POLICIES" "$INCLUDE_SECURITY_SERVICES"
+  printf "  %-18s %sControl Tower, IAM Identity Center, org accounts%s\n" "Preserves" "$c_dim" "$c_rst"
+  printf "%s%s%s\n" "$c_cyn" "$(rule 62 "$BOX_H")" "$c_rst"
+  printf "  %sLegend%s  %s%s planned%s   %s%s in-progress%s   %s%s done%s   %s%s failed%s   %s%s preserved%s\n" \
+    "$c_dim" "$c_rst" \
+    "$c_yel" "$G_DRY" "$c_rst" "$c_yel" "$G_ARROW" "$c_rst" \
+    "$c_grn" "$G_OK" "$c_rst" "$c_red" "$G_NO" "$c_rst" "$c_cyn" "$G_KEEP" "$c_rst"
+}
+
+summary_row() {
+  local label="$1" val="$2" color="${3:-$c_bold}"
+  printf "  %s%-28s%s %s%s%s\n" "$c_dim" "$label" "$c_rst" "$color" "$val" "$c_rst"
+}
+
+print_summary() {
+  local now elapsed fail_color
+  now=$(date +%s); elapsed=$((now - START_TS))
+  fail_color="$c_grn"; [ "$STAT_FAILED" -gt 0 ] && fail_color="$c_red"
+
+  printf "\n%s%s%s\n" "$c_cyn" "$(rule 62 "$BOX_H")" "$c_rst"
+  printf "  %s%sSUMMARY%s  %s(%s)%s\n" "$c_bold" "$c_cyn" "$c_rst" "$c_dim" \
+    "$([ "$EXECUTE" = true ] && echo "executed - resources removed" || echo "dry-run - nothing changed")" "$c_rst"
+  printf "%s%s%s\n" "$c_cyn" "$(rule 62 "$BOX_H")" "$c_rst"
+  summary_row "CloudFormation stacks"     "$STAT_STACKS"
+  summary_row "S3 buckets"                "$STAT_BUCKETS"
+  summary_row "KMS keys"                  "$STAT_KMS"
+  summary_row "SSM parameters"            "$STAT_SSM"
+  summary_row "IAM roles"                 "$STAT_IAM"
+  summary_row "CloudWatch log groups"     "$STAT_LOGS"
+  summary_row "CodeCommit repos"          "$STAT_CC"
+  [ "$INCLUDE_ORG_POLICIES" = true ]      && summary_row "Org policies"      "$STAT_ORG"
+  [ "$INCLUDE_SECURITY_SERVICES" = true ] && summary_row "Security services" "$STAT_SEC"
+  summary_row "Preserved (validator/skip)" "$STAT_PRESERVED" "$c_cyn"
+  summary_row "Failed"                     "$STAT_FAILED" "$fail_color"
+  summary_row "Elapsed"                    "$(fmt_elapsed "$elapsed")" "$c_dim"
+  printf "%s%s%s\n" "$c_cyn" "$(rule 62 "$BOX_H")" "$c_rst"
 }
 
 # ===========================================================================
@@ -428,6 +751,7 @@ teardown_security_services() {
 # ===========================================================================
 main() {
   command -v jq >/dev/null 2>&1 || { err "jq is required"; exit 1; }
+  START_TS=$(date +%s)
 
   # Identity + partition
   local ident
@@ -445,61 +769,43 @@ main() {
     [ -z "$accounts" ] && accounts="$MGMT_ACCOUNT_ID"
   fi
 
-  # Banner
-  echo "============================================================"
-  echo " LZA UNINSTALLER"
-  echo "============================================================"
-  echo " Mode              : $([ "$EXECUTE" = true ] && echo "${c_red}EXECUTE (destructive)${c_rst}" || echo "${c_grn}DRY-RUN${c_rst}")"
-  echo " Management account: $MGMT_ACCOUNT_ID   partition: $PARTITION"
-  echo " Regions           : $REGIONS"
-  echo " Accounts          : $accounts"
-  echo " Cross-account role: $MGMT_ROLE"
-  echo " Prefixes          : $PREFIX / $BUCKET_PREFIX / $SSM_PREFIX"
-  echo " Keep validator    : $([ "$INCLUDE_VALIDATOR" = true ] && echo no || echo yes)"
-  echo " Org policies       : $INCLUDE_ORG_POLICIES    Security services: $INCLUDE_SECURITY_SERVICES"
-  echo " Preserves         : Control Tower, IAM Identity Center, org accounts"
-  echo "============================================================"
+  print_banner "$accounts"
 
   if [ "$EXECUTE" = true ]; then
-    warn "This will PERMANENTLY delete LZA resources across the org."
-    printf "Type '%s' to proceed: " "$CONFIRM_PHRASE"
+    printf "\n"
+    warn "This will PERMANENTLY delete LZA resources across the organization."
+    printf "  %sType '%s%s%s' to proceed:%s " "$c_yel" "$c_bold" "$CONFIRM_PHRASE" "$c_rst$c_yel" "$c_rst"
     read -r reply
     [ "$reply" = "$CONFIRM_PHRASE" ] || { err "Confirmation mismatch; aborting."; exit 1; }
   fi
 
   # Per-account teardown
+  local acct aname region
   for acct in $accounts; do
-    echo ""
-    echo "------------------------------------------------------------"
-    echo " ACCOUNT: $acct"
-    echo "------------------------------------------------------------"
+    aname=$(acct_name "$acct")
+    account_header "$acct" "$aname"
     if ! assume_into "$acct"; then continue; fi
 
     ensure_deletion_role "$acct"
 
-    # Regional resources: stacks, KMS, SSM, logs, (security services)
+    # Regional resources: stacks, KMS, SSM, logs, (codecommit), (security services)
     for region in $REGIONS; do
-      log "[$acct/$region] CloudFormation stacks"
-      teardown_stacks_in_region "$region"
-      log "[$acct/$region] KMS keys"
-      teardown_kms "$region"
-      log "[$acct/$region] SSM parameters"
-      teardown_ssm "$region"
-      log "[$acct/$region] CloudWatch log groups"
-      teardown_log_groups "$region"
+      region_hdr "$region"
+      category "CloudFormation stacks";   teardown_stacks_in_region "$region"
+      category "KMS keys";                teardown_kms "$region"
+      category "SSM parameters";          teardown_ssm "$region"
+      category "CloudWatch log groups";   teardown_log_groups "$region"
       if [ "$acct" = "$MGMT_ACCOUNT_ID" ]; then
-        teardown_codecommit "$region"
+        category "CodeCommit";            teardown_codecommit "$region"
       fi
       if [ "$INCLUDE_SECURITY_SERVICES" = true ]; then
-        teardown_security_services "$region"
+        category "Security services";     teardown_security_services "$region"
       fi
     done
 
     # Global resources: S3 buckets, IAM roles
-    log "[$acct] S3 buckets"
-    teardown_buckets
-    log "[$acct] IAM roles"
-    teardown_iam_roles
+    category "S3 buckets (account-global)"; teardown_buckets
+    category "IAM roles (account-global)";  teardown_iam_roles
 
     cleanup_deletion_role
     clear_creds
@@ -507,20 +813,21 @@ main() {
 
   # Org-level (management account, once)
   if [ "$INCLUDE_ORG_POLICIES" = true ]; then
-    echo ""
-    echo "------------------------------------------------------------"
-    echo " ORG-LEVEL POLICIES (management account)"
-    echo "------------------------------------------------------------"
+    account_header "$MGMT_ACCOUNT_ID" "org-level policies"
     assume_into "$MGMT_ACCOUNT_ID"
     teardown_org_policies
     clear_creds
   fi
 
-  echo ""
+  print_summary
+
+  printf "\n"
   ok "LZA uninstall $([ "$EXECUTE" = true ] && echo "complete" || echo "dry-run complete (no changes made)")."
-  echo "Control Tower, IAM Identity Center, and org accounts were preserved."
-  [ "$INCLUDE_VALIDATOR" = false ] && echo "The Config Validator tooling was preserved (pass --include-validator to remove it)."
-  echo "KMS keys are scheduled for deletion (${KMS_WINDOW}-day window) and can be cancelled before then."
+  printf "  %sControl Tower, IAM Identity Center, and org accounts were preserved.%s\n" "$c_dim" "$c_rst"
+  if [ "$INCLUDE_VALIDATOR" = false ]; then
+    printf "  %sThe Config Validator tooling was preserved (pass --include-validator to remove it).%s\n" "$c_dim" "$c_rst"
+  fi
+  printf "  %sKMS keys are scheduled for deletion (%s-day window) and can be cancelled before then.%s\n" "$c_dim" "$KMS_WINDOW" "$c_rst"
 }
 
 main "$@"
