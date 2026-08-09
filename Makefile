@@ -10,9 +10,13 @@
 TEMPLATE := lza-config-validator.yaml
 SCRIPTS  := scripts/*.sh
 
-.PHONY: lint cfn-lint yaml shell cfn-nag
+.PHONY: lint cfn-lint yaml shell cfn-nag test
 
-lint: cfn-lint yaml shell
+lint: cfn-lint yaml shell test
+
+test:
+	@echo "==> naming + partition tests"
+	python3 tests/test_prefix_naming.py
 
 cfn-lint:
 	@echo "==> cfn-lint"
