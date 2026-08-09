@@ -29,15 +29,6 @@ echo "=========================================================="
 echo "LAYER 2: LZA Schema & Cross-Reference Validation"
 echo "=========================================================="
 
-# Assume the LZA Validator Synth Role for AWS API access (validate-config and CDK synth)
-if [ -n "${LZA_SYNTH_ROLE_ARN}" ]; then
-  echo "Assuming synth role: ${LZA_SYNTH_ROLE_ARN}"
-  CREDS=$(aws sts assume-role --role-arn "${LZA_SYNTH_ROLE_ARN}" --role-session-name lza-validator-synth --output json)
-  export AWS_ACCESS_KEY_ID=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['AccessKeyId'])")
-  export AWS_SECRET_ACCESS_KEY=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['SecretAccessKey'])")
-  export AWS_SESSION_TOKEN=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['SessionToken'])")
-fi
-
 mkdir -p "${WORK_DIR}"
 
 if [ -f "${WORK_DIR}/lza-source/source/package.json" ]; then
@@ -53,6 +44,15 @@ if [ -n "${LZA_SOURCE_BUCKET}" ]; then
 else
   echo "LZA_SOURCE_BUCKET not set, falling back to git clone (${LZA_VERSION})..."
   git clone --depth 1 --branch "${LZA_VERSION}" https://github.com/awslabs/landing-zone-accelerator-on-aws.git "${WORK_DIR}/lza-source"
+fi
+
+# Assume the LZA Validator Synth Role for AWS API access (validate-config and CDK synth)
+if [ -n "${LZA_SYNTH_ROLE_ARN}" ]; then
+  echo "Assuming synth role: ${LZA_SYNTH_ROLE_ARN}"
+  CREDS=$(aws sts assume-role --role-arn "${LZA_SYNTH_ROLE_ARN}" --role-session-name lza-validator-synth --output json)
+  export AWS_ACCESS_KEY_ID=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['AccessKeyId'])")
+  export AWS_SECRET_ACCESS_KEY=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['SecretAccessKey'])")
+  export AWS_SESSION_TOKEN=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['SessionToken'])")
 fi
 
 cd "${WORK_DIR}/lza-source/source"
