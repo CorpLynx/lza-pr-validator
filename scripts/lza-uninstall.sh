@@ -444,6 +444,24 @@ teardown_stacks_in_region() {
   fi
 }
 
+# Fully empty a versioned bucket: delete every object version and delete marker
+# in pages of <=1000 (the delete-objects limit), looping until nothing remains.
+empty_bucket() {
+  local b="$1" page n prop
+  for prop in Versions DeleteMarkers; do
+    while :; do
+      page=$(aws s3api list-object-versions --bucket "$b" --max-items 1000 \
+             --query "{Objects: ${prop}[].{Key:Key,VersionId:VersionId}}" --output json 2>/dev/null)
+      [ -z "$page" ] && break
+      n=$(echo "$page" | jq -r '(.Objects // []) | length' 2>/dev/null || echo 0)
+      [ "${n:-0}" = "0" ] && break
+      aws s3api delete-objects --bucket "$b" --delete "$page" >/dev/null 2>&1 || break
+    done
+  done
+  # sweep any remaining current (non-versioned) objects
+  aws s3 rm "s3://$b" --recursive >/dev/null 2>&1 || true
+}
+
 # Empty (all versions + delete markers) and delete aws-accelerator-* buckets.
 teardown_buckets() {
   local buckets b disp
@@ -454,18 +472,9 @@ teardown_buckets() {
     if is_validator "$b"; then preserved "bucket $disp"; continue; fi
     if [ "$EXECUTE" = true ]; then
       printf "Removing bucket %s... " "$(fit "$disp" "$(avail_for 28)")"
-      # delete all object versions
-      local vers marks
-      vers=$(aws s3api list-object-versions --bucket "$b" --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' --output json 2>/dev/null)
-      if [ -n "$vers" ] && [ "$(echo "$vers" | jq -r '.Objects')" != "null" ]; then
-        aws s3api delete-objects --bucket "$b" --delete "$vers" >/dev/null 2>&1 || true
-      fi
-      # delete all delete-markers
-      marks=$(aws s3api list-object-versions --bucket "$b" --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' --output json 2>/dev/null)
-      if [ -n "$marks" ] && [ "$(echo "$marks" | jq -r '.Objects')" != "null" ]; then
-        aws s3api delete-objects --bucket "$b" --delete "$marks" >/dev/null 2>&1 || true
-      fi
-      aws s3 rm "s3://$b" --recursive >/dev/null 2>&1 || true
+      empty_bucket "$b"
+      # drop any deny bucket-policy that would block deletion (best-effort)
+      aws s3api delete-bucket-policy --bucket "$b" >/dev/null 2>&1 || true
       if aws s3api delete-bucket --bucket "$b" >/dev/null 2>&1; then
         printf "%sok%s\n" "$c_grn" "$c_rst"
         STAT_BUCKETS=$((STAT_BUCKETS + 1))
