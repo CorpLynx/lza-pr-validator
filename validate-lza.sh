@@ -56,9 +56,15 @@ else
 fi
 
 cd "${WORK_DIR}/lza-source/source"
-echo "Installing dependencies and compiling core packages..."
-yarn install --frozen-lockfile --silent
-yarn build
+
+# Skip install/build if pre-built (dist/ directories exist)
+if [ -d "packages/@aws-accelerator/accelerator/dist" ]; then
+  echo "Pre-built bundle detected — skipping install and build."
+else
+  echo "Installing dependencies and compiling core packages..."
+  yarn install --frozen-lockfile --silent
+  yarn build
+fi
 
 echo "Executing yarn validate-config against: ${CONFIG_DIR}"
 yarn validate-config "${CONFIG_DIR}"
