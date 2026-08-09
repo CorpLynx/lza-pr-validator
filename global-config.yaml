@@ -14,6 +14,7 @@ controlTower:
 cdkOptions:
   centralizeBuckets: true
   useManagementAccessRole: true
+  useV2Stacks: true
 
 logging:
   account: LogArchive
