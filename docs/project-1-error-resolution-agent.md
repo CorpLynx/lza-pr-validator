@@ -22,7 +22,7 @@ Engineers spend hours reading LZA source code, CloudFormation docs, and GitHub i
 │  EventBridge Rule:                                                    │
 │  - Source: aws.codebuild                                              │
 │  - Detail: build-status = FAILED                                      │
-│  - Project: AWSAccelerator-ToolkitProject OR LZA-PR-Validator        │
+│  - Project: AWSAccelerator-ToolkitProject OR AWSAccelerator-ConfigValidator │
 │                                                                       │
 └──────────────────────────────────────┬───────────────────────────────┘
                                        │
@@ -52,7 +52,7 @@ Engineers spend hours reading LZA source code, CloudFormation docs, and GitHub i
 │     }                                                                 │
 │  6. Invoke Bedrock Agent with query                                   │
 │  7. Post response:                                                    │
-│     - If triggered by LZA-PR-Validator → GitHub PR comment            │
+│     - If triggered by ConfigValidator → GitHub PR comment             │
 │     - If triggered by AWSAccelerator pipeline → SNS notification      │
 │                                                                       │
 └──────────────────────────────────────┬───────────────────────────────┘

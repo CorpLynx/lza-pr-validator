@@ -1,0 +1,36 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EnableRootAccountAccess",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::{{account}}:root"
+      },
+      "Action": "kms:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "AllowKeyAdministration",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::{{account}}:role/AWSControlTowerExecution"
+      },
+      "Action": [
+        "kms:Create*",
+        "kms:Describe*",
+        "kms:Enable*",
+        "kms:List*",
+        "kms:Put*",
+        "kms:Update*",
+        "kms:Revoke*",
+        "kms:Disable*",
+        "kms:Get*",
+        "kms:Delete*",
+        "kms:ScheduleKeyDeletion",
+        "kms:CancelKeyDeletion"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

@@ -317,7 +317,7 @@ aws bedrock-agent invoke-agent \
 
 ## Integration with Validator Pipeline
 
-Add Layer 4 to `validate-lza.sh`:
+Add Layer 4 to `scripts/validate-config-pr.sh`:
 
 ```bash
 echo "=========================================================="

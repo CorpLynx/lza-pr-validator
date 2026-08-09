@@ -1,0 +1,74 @@
+name: CI
+
+# Lints and security-scans the validator tooling itself (not consumer configs).
+# Runs on every PR and push to main.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  cloudformation:
+    name: CloudFormation lint + security scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install cfn-lint
+        run: pip install --quiet cfn-lint
+
+      - name: cfn-lint
+        run: cfn-lint lza-config-validator.yaml
+
+      - name: cfn-nag security scan
+        uses: stelligent/cfn_nag@master
+        with:
+          input_path: lza-config-validator.yaml
+
+  yaml:
+    name: YAML lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install yamllint
+        run: pip install --quiet yamllint
+      - name: yamllint (config + tooling)
+        run: |
+          yamllint -c .yamllint.yml example-config/ buildspec.yml lza-config-validator.yaml
+
+  shell:
+    name: Shell lint + syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck scripts/*.sh
+      - name: bash syntax check
+        run: |
+          for f in scripts/*.sh; do bash -n "$f"; done
+
+  naming:
+    name: Prefix-derivation + partition portability tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Naming/partition tests
+        run: python3 tests/test_prefix_naming.py

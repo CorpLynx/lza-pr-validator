@@ -1,0 +1,103 @@
+centralSecurityServices:
+  delegatedAdminAccount: Audit
+  ebsDefaultVolumeEncryption:
+    enable: true
+    deploymentTargets:
+      organizationalUnits:
+        - Root
+  s3PublicAccessBlock:
+    enable: true
+    excludeAccounts: []
+  scpRevertChangesConfig:
+    enable: true
+    snsTopicName: Security
+  macie:
+    enable: true
+    excludeRegions: []
+    policyFindingsPublishingFrequency: FIFTEEN_MINUTES
+    publishSensitiveDataFindings: true
+  guardduty:
+    enable: true
+    excludeRegions: []
+    s3Protection:
+      enable: true
+      excludeRegions: []
+    exportConfiguration:
+      enable: true
+      overrideExisting: true
+      destinationType: S3
+      exportFrequency: FIFTEEN_MINUTES
+  securityHub:
+    enable: true
+    regionAggregation: true
+    snsTopicName: Security
+    notificationLevel: HIGH
+    deploymentTargets:
+      organizationalUnits:
+        - Root
+    standards:
+      - name: AWS Foundational Security Best Practices v1.0.0
+        enable: true
+        controlsToDisable: []
+      - name: CIS AWS Foundations Benchmark v1.4.0
+        enable: true
+        controlsToDisable: []
+  ssmAutomation:
+    excludeRegions: []
+    documentSets: []
+  snsSubscriptions:
+    - level: High
+      email: brichard4243@outlook.com
+    - level: Medium
+      email: brichard4243@outlook.com
+    - level: Low
+      email: brichard4243@outlook.com
+
+accessAnalyzer:
+  enable: true
+
+iamPasswordPolicy:
+  allowUsersToChangePassword: true
+  hardExpiry: false
+  requireUppercaseCharacters: true
+  requireLowercaseCharacters: true
+  requireSymbols: true
+  requireNumbers: true
+  minimumPasswordLength: 14
+  passwordReusePrevention: 24
+  maxPasswordAge: 90
+
+awsConfig:
+  enableConfigurationRecorder: true
+  enableDeliveryChannel: true
+  deploymentTargets:
+    organizationalUnits:
+      - Root
+  ruleSets: []
+
+cloudWatch:
+  metricSets: []
+  alarmSets: []
+
+keyManagementService:
+  keySets:
+    - name: GeneralEncryptionKey
+      alias: accelerator/general/encryption
+      policy: kms/general-encryption-key-policy.json
+      description: General purpose encryption key for workload accounts
+      enableKeyRotation: true
+      enabled: true
+      removalPolicy: retain
+      deploymentTargets:
+        organizationalUnits:
+          - Infrastructure
+    - name: EbsEncryptionKey
+      alias: accelerator/ebs/encryption
+      policy: kms/ebs-encryption-key-policy.json
+      description: KMS key for EBS volume encryption
+      enableKeyRotation: true
+      enabled: true
+      removalPolicy: retain
+      deploymentTargets:
+        organizationalUnits:
+          - Infrastructure

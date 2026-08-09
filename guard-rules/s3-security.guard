@@ -1,0 +1,32 @@
+# S3 security baseline for LZA-synthesized CloudFormation.
+# These rules encode patterns LZA's own output always satisfies, so they run
+# clean against known-good synth output and catch drift in customization stacks.
+#
+# Run: cfn-guard validate --data cdk.out/ --rules guard-rules/
+
+let s3_buckets = Resources.*[ Type == 'AWS::S3::Bucket' ]
+
+rule s3_bucket_encryption_enabled when %s3_buckets !empty {
+    %s3_buckets.Properties {
+        BucketEncryption exists
+        <<S3 buckets must define BucketEncryption>>
+        BucketEncryption.ServerSideEncryptionConfiguration[*] {
+            ServerSideEncryptionByDefault.SSEAlgorithm in ['AES256', 'aws:kms']
+            <<S3 bucket SSE algorithm must be AES256 or aws:kms>>
+        }
+    }
+}
+
+rule s3_bucket_public_access_blocked when %s3_buckets !empty {
+    %s3_buckets.Properties {
+        PublicAccessBlockConfiguration exists
+        <<S3 buckets must define PublicAccessBlockConfiguration>>
+        PublicAccessBlockConfiguration {
+            BlockPublicAcls == true
+            BlockPublicPolicy == true
+            IgnorePublicAcls == true
+            RestrictPublicBuckets == true
+            <<S3 buckets must block all public access>>
+        }
+    }
+}

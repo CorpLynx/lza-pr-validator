@@ -1,0 +1,86 @@
+homeRegion: &HOME_REGION us-east-1
+enabledRegions:
+  - *HOME_REGION
+  - us-west-2
+
+managementAccountAccessRole: AWSControlTowerExecution
+cloudwatchLogRetentionInDays: 365
+
+terminationProtection: true
+
+controlTower:
+  enable: true
+
+cdkOptions:
+  centralizeBuckets: true
+  useManagementAccessRole: true
+  useV2Stacks: true
+
+logging:
+  account: LogArchive
+  cloudtrail:
+    enable: true
+    organizationTrail: true
+    accountTrails: []
+  sessionManager:
+    sendToCloudWatchLogs: false
+    sendToS3: true
+
+snsTopics:
+  deploymentTargets:
+    organizationalUnits:
+      - Root
+  topics:
+    - name: Security
+      emailAddresses:
+        - brichard4243@outlook.com
+
+tags:
+  - key: Environment
+    value: Production
+  - key: ManagedBy
+    value: LZA
+
+reports:
+  costAndUsageReport:
+    compression: Parquet
+    format: Parquet
+    reportName: corplynx-cur
+    s3Prefix: cur
+    timeUnit: DAILY
+    refreshClosedReports: true
+    reportVersioning: CREATE_NEW_REPORT
+  budgets:
+    - deploymentTargets:
+        accounts:
+          - Management
+      name: monthly-budget
+      timeUnit: MONTHLY
+      type: COST
+      amount: 5000
+      includeUpfront: true
+      includeTax: true
+      includeSupport: true
+      includeSubscription: true
+      includeRecurring: true
+      includeOtherSubscription: true
+      includeDiscount: true
+      includeCredit: false
+      includeRefund: false
+      useBlended: false
+      useAmortized: false
+      unit: USD
+      notifications:
+        - type: ACTUAL
+          thresholdType: PERCENTAGE
+          threshold: 90
+          comparisonOperator: GREATER_THAN
+          subscriptionType: EMAIL
+          address: brichard4243@outlook.com
+
+backup:
+  vaults:
+    - name: DefaultBackupVault
+      deploymentTargets:
+        organizationalUnits:
+          - Root

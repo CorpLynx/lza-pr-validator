@@ -1,0 +1,23 @@
+mandatoryAccounts:
+  - name: Management
+    description: The management (primary) account
+    email: brichard4243@outlook.com
+    organizationalUnit: Root
+  - name: LogArchive
+    description: The centralized logging account
+    email: logarchive4243@outlook.com
+    organizationalUnit: Security
+  - name: Audit
+    description: The security audit account
+    email: Audit4243@outlook.com
+    organizationalUnit: Security
+
+workloadAccounts: []
+
+accountIds:
+  - email: brichard4243@outlook.com
+    accountId: '930738198822'
+  - email: logarchive4243@outlook.com
+    accountId: '236292170987'
+  - email: Audit4243@outlook.com
+    accountId: '435976456577'

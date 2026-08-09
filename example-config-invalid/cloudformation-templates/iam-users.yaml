@@ -1,0 +1,64 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Service account IAM users deployed via LZA customizations
+
+Resources:
+  CICDServiceUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: svc-cicd-pipeline
+      Policies:
+        - PolicyName: CICDServicePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - 'arn:aws:iam::*:role/CICD-Deployment-Role'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::corplynx-artifacts-${AWS::AccountId}'
+                  - !Sub 'arn:aws:s3:::corplynx-artifacts-${AWS::AccountId}/*'
+
+  MonitoringServiceUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: svc-monitoring
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess
+
+  BackupServiceUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: svc-backup-operator
+      Policies:
+        - PolicyName: BackupOperatorPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - backup:StartBackupJob
+                  - backup:DescribeBackupJob
+                  - backup:ListBackupJobs
+                  - backup:GetBackupPlan
+                  - backup:ListBackupPlans
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/Backup-Role'
+
+Outputs:
+  CICDServiceUserArn:
+    Value: !GetAtt CICDServiceUser.Arn
+  MonitoringServiceUserArn:
+    Value: !GetAtt MonitoringServiceUser.Arn
+  BackupServiceUserArn:
+    Value: !GetAtt BackupServiceUser.Arn
