@@ -1,16 +1,134 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: 'S3 + CodeBuild validation engine with caching for LZA PR checks'
 
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: LZA Settings
+        Parameters:
+          - pLZAVersion
+          - pAcceleratorResourcePrefix
+          - pAcceleratorSsmPrefix
+          - pCrossAccountRoleName
+      - Label:
+          default: Resource Names (leave blank to auto-generate where supported)
+        Parameters:
+          - pValidationBucketName
+          - pSourceBucketName
+          - pValidationProjectName
+          - pSourceBuilderProjectName
+          - pCodeBuildRoleName
+          - pSynthRoleName
+          - pSourceBuilderRoleName
+          - pGitHubActionsUserName
+          - pCredentialsSecretName
+      - Label:
+          default: Compute & Retention
+        Parameters:
+          - pValidationComputeType
+          - pSourceBuilderComputeType
+          - pPRZipRetentionDays
+
 Parameters:
-  LZAVersion:
+  pLZAVersion:
     Type: String
     Default: 'v1.16.0'
     Description: 'Release tag of awslabs/landing-zone-accelerator-on-aws to validate against'
+
+  pAcceleratorResourcePrefix:
+    Type: String
+    Default: 'AWSAccelerator'
+    Description: 'Resource name prefix LZA uses (scopes DynamoDB config table access). Match the AcceleratorPrefix from your LZA installer.'
+
+  pAcceleratorSsmPrefix:
+    Type: String
+    Default: 'accelerator'
+    Description: 'SSM parameter path prefix LZA uses (without leading slash). Scopes SSM read access.'
+
+  pCrossAccountRoleName:
+    Type: String
+    Default: 'AWSControlTowerExecution'
+    Description: 'Name of the cross-account role the synth step assumes in member accounts (e.g. AWSControlTowerExecution or OrganizationAccountAccessRole).'
+
+  pValidationBucketName:
+    Type: String
+    Default: ''
+    Description: 'Name for the PR validation S3 bucket. Leave blank to auto-generate.'
+
+  pSourceBucketName:
+    Type: String
+    Default: ''
+    Description: 'Name for the LZA source S3 bucket. Leave blank to auto-generate.'
+
+  pValidationProjectName:
+    Type: String
+    Default: 'LZA-PR-Validator'
+    Description: 'Name for the validation CodeBuild project.'
+
+  pSourceBuilderProjectName:
+    Type: String
+    Default: 'LZA-Source-Builder'
+    Description: 'Name for the source-builder CodeBuild project.'
+
+  pCodeBuildRoleName:
+    Type: String
+    Default: 'LZA-PR-Validator-CodeBuild-Role'
+    Description: 'Name for the validation CodeBuild service role.'
+
+  pSynthRoleName:
+    Type: String
+    Default: 'LZA-PR-Validator-Synth-Role'
+    Description: 'Name for the CDK synth role (elevated read-only access).'
+
+  pSourceBuilderRoleName:
+    Type: String
+    Default: 'LZA-Source-Builder-Role'
+    Description: 'Name for the source-builder CodeBuild service role.'
+
+  pGitHubActionsUserName:
+    Type: String
+    Default: 'GHA-LZA-PR-Validator-User'
+    Description: 'Name for the GitHub Actions IAM user.'
+
+  pCredentialsSecretName:
+    Type: String
+    Default: 'lza-pr-validator/github-actions-credentials'
+    Description: 'Secrets Manager secret name storing the GitHub Actions access key and secret.'
+
+  pValidationComputeType:
+    Type: String
+    Default: 'BUILD_GENERAL1_MEDIUM'
+    AllowedValues:
+      - BUILD_GENERAL1_SMALL
+      - BUILD_GENERAL1_MEDIUM
+      - BUILD_GENERAL1_LARGE
+    Description: 'Compute size for validation runs (pre-built bundle needs MEDIUM or higher).'
+
+  pSourceBuilderComputeType:
+    Type: String
+    Default: 'BUILD_GENERAL1_LARGE'
+    AllowedValues:
+      - BUILD_GENERAL1_MEDIUM
+      - BUILD_GENERAL1_LARGE
+      - BUILD_GENERAL1_2XLARGE
+    Description: 'Compute size for the source builder (compiles 128 packages; needs LARGE or higher).'
+
+  pPRZipRetentionDays:
+    Type: Number
+    Default: 7
+    MinValue: 1
+    Description: 'Days to retain uploaded PR config zips before lifecycle expiry.'
+
+Conditions:
+  HasValidationBucketName: !Not [!Equals [!Ref pValidationBucketName, '']]
+  HasSourceBucketName: !Not [!Equals [!Ref pSourceBucketName, '']]
 
 Resources:
   PRValidationBucket:
     Type: AWS::S3::Bucket
     Properties:
+      BucketName: !If [HasValidationBucketName, !Ref pValidationBucketName, !Ref 'AWS::NoValue']
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -19,7 +137,7 @@ Resources:
         Rules:
           - Id: CleanUpOldPrZips
             Status: Enabled
-            ExpirationInDays: 7
+            ExpirationInDays: !Ref pPRZipRetentionDays
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -47,6 +165,7 @@ Resources:
   LZASourceBucket:
     Type: AWS::S3::Bucket
     Properties:
+      BucketName: !If [HasSourceBucketName, !Ref pSourceBucketName, !Ref 'AWS::NoValue']
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -80,7 +199,7 @@ Resources:
   CodeBuildValidatorRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: LZA-PR-Validator-CodeBuild-Role
+      RoleName: !Ref pCodeBuildRoleName
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -116,18 +235,18 @@ Resources:
                 Action:
                   - sts:AssumeRole
                 Resource:
-                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/LZA-PR-Validator-Synth-Role'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${pSynthRoleName}'
 
   LZAValidatorSynthRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: LZA-PR-Validator-Synth-Role
+      RoleName: !Ref pSynthRoleName
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/LZA-PR-Validator-CodeBuild-Role'
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${pCodeBuildRoleName}'
             Action: sts:AssumeRole
       Policies:
         - PolicyName: LZASynthPolicy
@@ -152,7 +271,7 @@ Resources:
                   - dynamodb:Scan
                   - dynamodb:GetItem
                   - dynamodb:DescribeTable
-                Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/AWSAccelerator-*'
+                Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${pAcceleratorResourcePrefix}-*'
               - Sid: SSMParameterRead
                 Effect: Allow
                 Action:
@@ -160,7 +279,7 @@ Resources:
                   - ssm:GetParameters
                   - ssm:GetParametersByPath
                 Resource:
-                  - !Sub 'arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/accelerator/*'
+                  - !Sub 'arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/${pAcceleratorSsmPrefix}/*'
                   - !Sub 'arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/cdk-bootstrap/*'
               - Sid: KMSDecrypt
                 Effect: Allow
@@ -185,12 +304,12 @@ Resources:
                 Action:
                   - sts:AssumeRole
                 Resource:
-                  - !Sub 'arn:${AWS::Partition}:iam::*:role/AWSControlTowerExecution'
+                  - !Sub 'arn:${AWS::Partition}:iam::*:role/${pCrossAccountRoleName}'
 
   LZAValidationProject:
     Type: AWS::CodeBuild::Project
     Properties:
-      Name: LZA-PR-Validator
+      Name: !Ref pValidationProjectName
       Description: 'Validates LZA PR configs from S3 archive using yamllint, validate-config, and concurrent cdk synth'
       ServiceRole: !GetAtt CodeBuildValidatorRole.Arn
       Artifacts:
@@ -201,11 +320,11 @@ Resources:
           - LOCAL_SOURCE_CACHE
       Environment:
         Type: LINUX_CONTAINER
-        ComputeType: BUILD_GENERAL1_MEDIUM  # 4 vCPUs, 7 GB RAM - sufficient for pre-built validation
+        ComputeType: !Ref pValidationComputeType
         Image: aws/codebuild/standard:7.0
         EnvironmentVariables:
           - Name: LZA_VERSION
-            Value: !Ref LZAVersion
+            Value: !Ref pLZAVersion
           - Name: LZA_SOURCE_BUCKET
             Value: !Ref LZASourceBucket
           - Name: LZA_SYNTH_ROLE_ARN
@@ -223,7 +342,7 @@ Resources:
   GitHubActionsUser:
     Type: AWS::IAM::User
     Properties:
-      UserName: GHA-LZA-PR-Validator-User
+      UserName: !Ref pGitHubActionsUserName
       Policies:
         - PolicyName: S3UploadAndCodeBuildInvoke
           PolicyDocument:
@@ -240,12 +359,12 @@ Resources:
                   - logs:GetLogEvents
                 Resource:
                   - !GetAtt LZAValidationProject.Arn
-                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/LZA-PR-Validator:*'
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${pValidationProjectName}:*'
 
   LZASourceBuilderRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: LZA-Source-Builder-Role
+      RoleName: !Ref pSourceBuilderRoleName
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -273,23 +392,23 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/LZA-Source-Builder:*'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${pSourceBuilderProjectName}:*'
 
   LZASourceBuilderProject:
     Type: AWS::CodeBuild::Project
     Properties:
-      Name: LZA-Source-Builder
+      Name: !Ref pSourceBuilderProjectName
       Description: 'Builds pre-compiled LZA source tar and uploads to S3. Run manually when LZA version changes.'
       ServiceRole: !GetAtt LZASourceBuilderRole.Arn
       Artifacts:
         Type: NO_ARTIFACTS
       Environment:
         Type: LINUX_CONTAINER
-        ComputeType: BUILD_GENERAL1_LARGE
+        ComputeType: !Ref pSourceBuilderComputeType
         Image: aws/codebuild/standard:7.0
         EnvironmentVariables:
           - Name: LZA_VERSION
-            Value: !Ref LZAVersion
+            Value: !Ref pLZAVersion
           - Name: LZA_SOURCE_BUCKET
             Value: !Ref LZASourceBucket
           - Name: NODE_OPTIONS
@@ -328,16 +447,32 @@ Resources:
     Properties:
       UserName: !Ref GitHubActionsUser
 
+  GitHubActionsCredentialsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Ref pCredentialsSecretName
+      Description: 'GitHub Actions IAM user credentials for the LZA PR validator. Consume these to set repository secrets.'
+      SecretString: !Sub '{"AWS_ACCESS_KEY_ID":"${GitHubActionsAccessKey}","AWS_SECRET_ACCESS_KEY":"${GitHubActionsAccessKey.SecretAccessKey}"}'
+
 Outputs:
   ValidationS3BucketName:
+    Description: 'S3 bucket that receives PR config zips'
     Value: !Ref PRValidationBucket
   LZASourceBucketName:
+    Description: 'S3 bucket holding LZA source bundles'
     Value: !Ref LZASourceBucket
-  GitHubActionsAccessKeyId:
-    Value: !Ref GitHubActionsAccessKey
-  GitHubActionsSecretAccessKey:
-    Value: !GetAtt GitHubActionsAccessKey.SecretAccessKey
   CodeBuildProjectName:
+    Description: 'Validation CodeBuild project name'
     Value: !Ref LZAValidationProject
   SourceBuilderProjectName:
+    Description: 'Source builder CodeBuild project name'
     Value: !Ref LZASourceBuilderProject
+  CredentialsSecretArn:
+    Description: 'Secrets Manager secret ARN holding the GitHub Actions access key and secret (JSON: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)'
+    Value: !Ref GitHubActionsCredentialsSecret
+  CredentialsSecretName:
+    Description: 'Secrets Manager secret name'
+    Value: !Ref pCredentialsSecretName
+  RetrieveCredentialsCommand:
+    Description: 'CLI command to retrieve the GitHub Actions credentials'
+    Value: !Sub 'aws secretsmanager get-secret-value --secret-id ${pCredentialsSecretName} --query SecretString --output text'

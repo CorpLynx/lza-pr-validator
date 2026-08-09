@@ -82,12 +82,15 @@ aws cloudformation deploy \
   --region us-east-1
 ```
 
+The stack is parameterized — override any of the resource names, compute sizes, LZA version, accelerator prefix, or cross-account role name at deploy time (all parameters are prefixed `p`). Leave bucket-name parameters blank to auto-generate.
+
 Note the stack outputs:
 - `ValidationS3BucketName`
 - `LZASourceBucketName`
-- `GitHubActionsAccessKeyId` / `GitHubActionsSecretAccessKey`
 - `CodeBuildProjectName`
 - `SourceBuilderProjectName`
+- `CredentialsSecretArn` / `CredentialsSecretName` — GitHub Actions credentials are stored in **Secrets Manager**, not in plaintext outputs
+- `RetrieveCredentialsCommand` — ready-to-run CLI command to fetch the credentials
 
 ### Step 2: Build the Pre-Built LZA Source Bundle
 Upload the raw LZA source (no `node_modules`/`dist`) to the source bucket, then run the builder:
@@ -108,15 +111,18 @@ Copy these into the **root** of your LZA config repo:
 - `.github/workflows/validate-pr.yml`
 
 ### Step 4: Configure GitHub Secrets
-Set these repository secrets (Settings → Secrets → Actions):
-- `AWS_ACCESS_KEY_ID` = `GitHubActionsAccessKeyId` output
-- `AWS_SECRET_ACCESS_KEY` = `GitHubActionsSecretAccessKey` output
-- `AWS_REGION` = your LZA region
-- `S3_BUCKET` = `ValidationS3BucketName` output
+Retrieve the GitHub Actions credentials from Secrets Manager (the stack stores them there instead of exposing them as plaintext outputs):
 
 ```bash
-gh secret set AWS_ACCESS_KEY_ID --body "<value>"
-gh secret set AWS_SECRET_ACCESS_KEY --body "<value>"
+CREDS=$(aws secretsmanager get-secret-value \
+  --secret-id lza-pr-validator/github-actions-credentials \
+  --query SecretString --output text)
+
+ACCESS_KEY_ID=$(echo "$CREDS" | jq -r '.AWS_ACCESS_KEY_ID')
+SECRET_ACCESS_KEY=$(echo "$CREDS" | jq -r '.AWS_SECRET_ACCESS_KEY')
+
+gh secret set AWS_ACCESS_KEY_ID --body "$ACCESS_KEY_ID"
+gh secret set AWS_SECRET_ACCESS_KEY --body "$SECRET_ACCESS_KEY"
 gh secret set AWS_REGION --body "us-east-1"
 gh secret set S3_BUCKET --body "<ValidationS3BucketName>"
 ```
