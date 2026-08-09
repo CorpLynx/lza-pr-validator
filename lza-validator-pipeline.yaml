@@ -103,7 +103,6 @@ Resources:
                   - s3:GetObject
                   - s3:GetObjectVersion
                   - s3:ListBucket
-                  - s3:PutObject
                 Resource:
                   - !Sub '${LZASourceBucket.Arn}'
                   - !Sub '${LZASourceBucket.Arn}/*'
@@ -130,32 +129,59 @@ Resources:
             Principal:
               AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/LZA-PR-Validator-CodeBuild-Role'
             Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess'
       Policies:
-        - PolicyName: LZASynthExtras
+        - PolicyName: LZASynthPolicy
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Effect: Allow
+              - Sid: OrganizationsReadOnly
+                Effect: Allow
                 Action:
                   - organizations:ListAccounts
                   - organizations:DescribeOrganization
+                  - organizations:DescribeAccount
                   - organizations:ListRoots
                   - organizations:ListOrganizationalUnitsForParent
                   - organizations:ListChildren
+                  - organizations:ListAccountsForParent
+                Resource: '*'
+              - Sid: DynamoDBConfigTable
+                Effect: Allow
+                Action:
                   - dynamodb:Query
                   - dynamodb:Scan
                   - dynamodb:GetItem
+                  - dynamodb:DescribeTable
+                Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/AWSAccelerator-*'
+              - Sid: SSMParameterRead
+                Effect: Allow
+                Action:
                   - ssm:GetParameter
                   - ssm:GetParameters
                   - ssm:GetParametersByPath
-                  - sts:GetCallerIdentity
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/accelerator/*'
+                  - !Sub 'arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/cdk-bootstrap/*'
+              - Sid: KMSDecrypt
+                Effect: Allow
+                Action:
                   - kms:Decrypt
                   - kms:DescribeKey
                   - kms:GenerateDataKey
+                Resource: !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+              - Sid: STSIdentity
+                Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
                 Resource: '*'
-              - Effect: Allow
+              - Sid: EC2DescribeRegions
+                Effect: Allow
+                Action:
+                  - ec2:DescribeRegions
+                  - ec2:DescribeAvailabilityZones
+                Resource: '*'
+              - Sid: CrossAccountAccess
+                Effect: Allow
                 Action:
                   - sts:AssumeRole
                 Resource:
@@ -216,6 +242,86 @@ Resources:
                   - !GetAtt LZAValidationProject.Arn
                   - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/LZA-PR-Validator:*'
 
+  LZASourceBuilderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LZA-Source-Builder-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LZASourceBuilderPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: S3WriteSource
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub '${LZASourceBucket.Arn}'
+                  - !Sub '${LZASourceBucket.Arn}/*'
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/LZA-Source-Builder:*'
+
+  LZASourceBuilderProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: LZA-Source-Builder
+      Description: 'Builds pre-compiled LZA source tar and uploads to S3. Run manually when LZA version changes.'
+      ServiceRole: !GetAtt LZASourceBuilderRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/standard:7.0
+        EnvironmentVariables:
+          - Name: LZA_VERSION
+            Value: !Ref LZAVersion
+          - Name: LZA_SOURCE_BUCKET
+            Value: !Ref LZASourceBucket
+          - Name: NODE_OPTIONS
+            Value: '--max-old-space-size=8192'
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              runtime-versions:
+                nodejs: 22
+              commands:
+                - npm install --global yarn
+            build:
+              commands:
+                - echo "Cloning LZA ${LZA_VERSION} source..."
+                - git clone --depth 1 --branch "release/${LZA_VERSION}" https://github.com/awslabs/landing-zone-accelerator-on-aws.git /tmp/lza-source
+                - cd /tmp/lza-source/source
+                - echo "Installing dependencies..."
+                - yarn install --frozen-lockfile
+                - echo "Building all packages..."
+                - yarn build
+                - echo "Creating prebuilt tar..."
+                - cd /tmp/lza-source
+                - tar -czf /tmp/lza-${LZA_VERSION}.tar.gz --exclude=.git .
+                - ls -lh /tmp/lza-${LZA_VERSION}.tar.gz
+                - echo "Uploading to s3://${LZA_SOURCE_BUCKET}/lza-${LZA_VERSION}.tar.gz"
+                - aws s3 cp /tmp/lza-${LZA_VERSION}.tar.gz s3://${LZA_SOURCE_BUCKET}/lza-${LZA_VERSION}.tar.gz
+                - echo "Done! Pre-built LZA ${LZA_VERSION} uploaded."
+      TimeoutInMinutes: 30
+
   GitHubActionsAccessKey:
     Type: AWS::IAM::AccessKey
     Properties:
@@ -232,3 +338,5 @@ Outputs:
     Value: !GetAtt GitHubActionsAccessKey.SecretAccessKey
   CodeBuildProjectName:
     Value: !Ref LZAValidationProject
+  SourceBuilderProjectName:
+    Value: !Ref LZASourceBuilderProject
