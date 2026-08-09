@@ -114,23 +114,43 @@ Resources:
                 Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
               - Effect: Allow
                 Action:
-                  - organizations:DescribeOrganization
+                  - sts:AssumeRole
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/LZA-PR-Validator-Synth-Role'
+
+  LZAValidatorSynthRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LZA-PR-Validator-Synth-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/LZA-PR-Validator-CodeBuild-Role'
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess'
+      Policies:
+        - PolicyName: LZASynthExtras
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
                   - organizations:ListAccounts
+                  - organizations:DescribeOrganization
                   - organizations:ListRoots
                   - organizations:ListOrganizationalUnitsForParent
                   - organizations:ListChildren
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:GetItem
                   - ssm:GetParameter
                   - ssm:GetParameters
                   - ssm:GetParametersByPath
                   - sts:GetCallerIdentity
-                  - ec2:DescribeRegions
-                  - ec2:DescribeAvailabilityZones
                 Resource: '*'
-              - Effect: Allow
-                Action:
-                  - sts:AssumeRole
-                Resource:
-                  - !Sub 'arn:${AWS::Partition}:iam::*:role/AWSControlTowerExecution'
 
   LZAValidationProject:
     Type: AWS::CodeBuild::Project
@@ -154,6 +174,8 @@ Resources:
             Value: !Ref LZAVersion
           - Name: LZA_SOURCE_BUCKET
             Value: !Ref LZASourceBucket
+          - Name: LZA_SYNTH_ROLE_ARN
+            Value: !GetAtt LZAValidatorSynthRole.Arn
           - Name: AWS_PARTITION
             Value: !Ref 'AWS::Partition'
           - Name: NODE_OPTIONS
