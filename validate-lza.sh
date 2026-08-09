@@ -6,6 +6,7 @@ LZA_VERSION="${LZA_VERSION:-v1.16.0}"
 AWS_PARTITION="${AWS_PARTITION:-aws}"
 AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
 AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+LZA_SOURCE_BUCKET="${LZA_SOURCE_BUCKET:-}"
 WORK_DIR="/tmp/lza-validation"
 START_TIME=$(date +%s)
 
@@ -27,20 +28,43 @@ print_time
 echo "=========================================================="
 echo "LAYER 2: LZA Schema & Cross-Reference Validation"
 echo "=========================================================="
+
 mkdir -p "${WORK_DIR}"
 
-if [ -d "${WORK_DIR}/lza-source/.git" ] && [ "$(cd "${WORK_DIR}/lza-source" && git describe --tags --always)" = "${LZA_VERSION}" ]; then
-  echo "Using cached LZA source code (${LZA_VERSION})..."
-else
-  echo "Cloning AWS LZA repository (${LZA_VERSION})..."
+if [ -f "${WORK_DIR}/lza-source/source/package.json" ]; then
+  echo "Removing stale LZA source to ensure clean build..."
   rm -rf "${WORK_DIR}/lza-source"
+fi
+
+rm -rf "${WORK_DIR}/lza-source"
+if [ -n "${LZA_SOURCE_BUCKET}" ]; then
+  echo "Downloading LZA source bundle from s3://${LZA_SOURCE_BUCKET}/lza-${LZA_VERSION}.tar.gz..."
+  mkdir -p "${WORK_DIR}/lza-source"
+  aws s3 cp "s3://${LZA_SOURCE_BUCKET}/lza-${LZA_VERSION}.tar.gz" - | tar -xz -C "${WORK_DIR}/lza-source" --warning=no-unknown-keyword 2>/dev/null
+else
+  echo "LZA_SOURCE_BUCKET not set, falling back to git clone (${LZA_VERSION})..."
   git clone --depth 1 --branch "${LZA_VERSION}" https://github.com/awslabs/landing-zone-accelerator-on-aws.git "${WORK_DIR}/lza-source"
 fi
 
+# Assume the LZA Validator Synth Role for AWS API access (validate-config and CDK synth)
+if [ -n "${LZA_SYNTH_ROLE_ARN}" ]; then
+  echo "Assuming synth role: ${LZA_SYNTH_ROLE_ARN}"
+  CREDS=$(aws sts assume-role --role-arn "${LZA_SYNTH_ROLE_ARN}" --role-session-name lza-validator-synth --output json)
+  export AWS_ACCESS_KEY_ID=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['AccessKeyId'])")
+  export AWS_SECRET_ACCESS_KEY=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['SecretAccessKey'])")
+  export AWS_SESSION_TOKEN=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['SessionToken'])")
+fi
+
 cd "${WORK_DIR}/lza-source/source"
-echo "Installing dependencies and compiling core packages..."
-yarn install --frozen-lockfile --silent
-yarn build
+
+# Skip install/build if pre-built (dist/ directories exist)
+if [ -d "packages/@aws-accelerator/accelerator/dist" ]; then
+  echo "Pre-built bundle detected — skipping install and build."
+else
+  echo "Installing dependencies and compiling core packages..."
+  yarn install --frozen-lockfile --silent
+  yarn build
+fi
 
 echo "Executing yarn validate-config against: ${CONFIG_DIR}"
 yarn validate-config "${CONFIG_DIR}"
@@ -50,6 +74,7 @@ print_time
 echo "=========================================================="
 echo "LAYER 3: Concurrent Dry-Run CDK Synthesis"
 echo "=========================================================="
+
 cd "${WORK_DIR}/lza-source/source/packages/@aws-accelerator/accelerator"
 
 STAGES=("prepare" "security" "customizations")
