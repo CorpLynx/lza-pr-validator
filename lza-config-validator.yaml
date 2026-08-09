@@ -262,6 +262,9 @@ Resources:
   # optionally further restricted by aws:PrincipalOrgID when OrganizationId is provided.
   ConfigValidatorSynthRole:
     Type: AWS::IAM::Role
+    # The trust policy names the CodeBuild role by ARN; ensure it exists first so IAM
+    # can validate the principal (avoids "Invalid principal in policy").
+    DependsOn: ConfigValidatorRole
     Properties:
       RoleName: !Sub '${AcceleratorPrefix}-ConfigValidator-Synth-Role'
       PermissionsBoundary: !If
