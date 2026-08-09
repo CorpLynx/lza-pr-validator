@@ -41,8 +41,23 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Zip PR Configuration Files
+        env:
+          # Consumers leave this unset: the whole repo root (their config) is validated.
+          # This tooling repo sets the repo variable PR_CONFIG_DIR=example-config so its
+          # sample config is assembled into a consumer-style layout (config at root +
+          # buildspec + scripts) and validated meaningfully.
+          PR_CONFIG_DIR: ${{ vars.PR_CONFIG_DIR }}
         run: |
-          zip -q -r pr-config.zip . -x "*.git*"
+          if [ -n "${PR_CONFIG_DIR}" ] && [ "${PR_CONFIG_DIR}" != "." ]; then
+            echo "Assembling consumer-style layout from ${PR_CONFIG_DIR}/"
+            rm -rf /tmp/pr && mkdir -p /tmp/pr/scripts
+            cp -r "${PR_CONFIG_DIR}/." /tmp/pr/
+            cp buildspec.yml /tmp/pr/
+            cp scripts/*.sh /tmp/pr/scripts/
+            (cd /tmp/pr && zip -q -r "${GITHUB_WORKSPACE}/pr-config.zip" . -x "*.git*")
+          else
+            zip -q -r pr-config.zip . -x "*.git*"
+          fi
 
       - name: Upload PR Zip to S3
         id: upload
