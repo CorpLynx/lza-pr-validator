@@ -37,7 +37,7 @@ else
   if [ -n "${LZA_SOURCE_BUCKET}" ]; then
     echo "Downloading LZA source bundle from s3://${LZA_SOURCE_BUCKET}/lza-${LZA_VERSION}.tar.gz..."
     mkdir -p "${WORK_DIR}/lza-source"
-    aws s3 cp "s3://${LZA_SOURCE_BUCKET}/lza-${LZA_VERSION}.tar.gz" - | tar -xz -C "${WORK_DIR}/lza-source"
+    aws s3 cp "s3://${LZA_SOURCE_BUCKET}/lza-${LZA_VERSION}.tar.gz" - | tar -xz -C "${WORK_DIR}/lza-source" --warning=no-unknown-keyword 2>/dev/null
   else
     echo "LZA_SOURCE_BUCKET not set, falling back to git clone (${LZA_VERSION})..."
     git clone --depth 1 --branch "${LZA_VERSION}" https://github.com/awslabs/landing-zone-accelerator-on-aws.git "${WORK_DIR}/lza-source"
